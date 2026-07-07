@@ -2,7 +2,17 @@
 
 A lightweight, configurable workflow application for tracking at-risk customer (MCP) recovery work performed by assigned colleagues (BAs/BEAs). Built to the **Customer Assignment Tool — Master Product & Technical Specification**.
 
-## Quick start
+## Not a developer? Start here
+
+1. **Install Node.js** (free, one time): go to https://nodejs.org and install the green **LTS** version, clicking Next through the installer.
+2. **Get this project onto your computer**: on the GitHub page, click the green **Code** button → **Download ZIP**, then unzip it anywhere (e.g. your Desktop).
+3. **Double-click the launcher** in the unzipped folder:
+   - Windows: `Start Tool (Windows).bat`
+   - Mac: `Start Tool (Mac).command` (first time: right-click it → **Open** → **Open** to get past the security prompt)
+
+A black window opens and does the setup (a minute or two the first time), then your browser opens the tool at `http://localhost:3001`. Pick a name under **"Working as"** in the sidebar and explore — it comes pre-loaded with sample projects. To stop the tool, close the black window.
+
+## Quick start (developers)
 
 ```bash
 npm install          # installs server + client workspaces
