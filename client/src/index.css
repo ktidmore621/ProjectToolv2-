@@ -1,0 +1,70 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "tailwindcss";
+
+/* Design tokens — §10.2 / §10.3. RAG colors deliberately desaturated. */
+@theme {
+  --color-canvas: #eef1f5;
+  --color-surface: #ffffff;
+  --color-ink: #1b2537;
+  --color-muted: #5c6b84;
+  --color-primary: #2e4e8f;
+  --color-primary-soft: #e6ecf7;
+  --color-accent: #12808a;
+  --color-accent-soft: #e0f0f1;
+  --color-hairline: #dfe4ec;
+  --color-rowalt: #f7f9fb;
+  --color-rag-red: #c2554e;
+  --color-rag-amber: #c99239;
+  --color-rag-green: #4e9468;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+  --shadow-card: 0 1px 2px rgb(27 37 55 / 0.05), 0 1px 3px rgb(27 37 55 / 0.08);
+  --shadow-lift: 0 4px 12px rgb(27 37 55 / 0.14), 0 2px 4px rgb(27 37 55 / 0.1);
+}
+
+html {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+}
+
+/* Visible keyboard focus everywhere — §10.6 */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Smooth chip/status color transitions — §10.5 */
+.chip {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.skeleton {
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+  background: var(--color-hairline);
+  border-radius: 6px;
+}
+
+@keyframes toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.toast-enter { animation: toast-in 180ms ease-out; }

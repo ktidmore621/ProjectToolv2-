@@ -1,0 +1,339 @@
+import { Router } from "express";
+import { z } from "zod";
+import { db } from "../db.js";
+import {
+  CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, generateTasksFromTemplate, isClosedStatus,
+  logActivity, nextProjectCode, serializeProject, serializeTask, valueById, valueByMapsTo, valuesFor,
+} from "../core.js";
+
+export const projects = Router();
+
+const activeStatusIds = () =>
+  valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
+
+/** Enforce configurable field requirements (§5.3) for a given moment. */
+function requirementErrors(objectType: string, at: string[], body: Record<string, any>): string[] {
+  const rules = db
+    .prepare(
+      `SELECT field_name, label FROM field_requirements
+       WHERE object_type = ? AND required = 1 AND required_at IN (${at.map(() => "?").join(",")})`
+    )
+    .all(objectType, ...at) as { field_name: string; label: string }[];
+  const errs: string[] = [];
+  for (const r of rules) {
+    const v = body[r.field_name];
+    if (v === undefined || v === null || (typeof v === "string" && !v.trim())) errs.push(`${r.label} is required`);
+  }
+  return errs;
+}
+
+projects.get("/", (req, res) => {
+  const { scope, assignee_id, rag, risk_level_id, template_id, q } = req.query as Record<string, string>;
+  let rows = db.prepare("SELECT * FROM projects ORDER BY created_date DESC").all() as any[];
+  let out = rows.map((p) => serializeProject(p));
+  if (scope === "active") out = out.filter((p) => !p.is_closed);
+  if (scope === "closed") out = out.filter((p) => p.is_closed);
+  if (assignee_id) out = out.filter((p) => p.assignee_id === Number(assignee_id));
+  if (rag) out = out.filter((p) => p.rag === rag);
+  if (risk_level_id) out = out.filter((p) => p.risk_level_id === Number(risk_level_id));
+  if (template_id) out = out.filter((p) => p.template_id === Number(template_id));
+  if (q) {
+    const s = q.toLowerCase();
+    out = out.filter((p) =>
+      [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name].some((f) => f?.toLowerCase().includes(s))
+    );
+  }
+  res.json(out);
+});
+
+projects.get("/:id", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  res.json(serializeProject(p, { withTasks: true }));
+});
+
+const createSchema = z.object({
+  mcp_number: z.string().min(1),
+  mcp_name: z.string().min(1),
+  assignee_id: z.number(),
+  assignment_date: z.string().min(1),
+  target_date: z.string().nullish(),
+  risk_level_id: z.number().nullish(),
+  template_id: z.number(),
+  user_id: z.number(), // acting user
+});
+
+projects.post("/", (req, res) => {
+  const parsed = createSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+  const b = parsed.data;
+
+  const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, project_code: "auto" });
+  if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
+
+  // One active project per MCP (§2.3) — enforced server-side
+  const ids = activeStatusIds();
+  const dup = db
+    .prepare(`SELECT project_code FROM projects WHERE mcp_number = ? AND status_id IN (${ids.map(() => "?").join(",")})`)
+    .get(b.mcp_number, ...ids) as { project_code: string } | undefined;
+  if (dup)
+    return res.status(409).json({ error: `MCP ${b.mcp_number} already has an active project (${dup.project_code}). Close it before creating a new one.` });
+
+  const tpl = db.prepare("SELECT * FROM workflow_templates WHERE id = ? AND is_active = 1").get(b.template_id);
+  if (!tpl) return res.status(400).json({ error: "Selected template is not available" });
+
+  const statusNew = valueByMapsTo("Project Status", "new")!;
+  const create = db.transaction(() => {
+    const code = nextProjectCode();
+    const pid = db
+      .prepare(
+        `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, assignment_date, target_date, template_id, status_id, risk_level_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(code, b.mcp_number, b.mcp_name, b.assignee_id, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
+      .lastInsertRowid as number;
+    generateTasksFromTemplate(pid, b.template_id, b.assignment_date);
+    logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
+    return pid;
+  });
+  const pid = create();
+  res.status(201).json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(pid), { withTasks: true }));
+});
+
+projects.patch("/:id", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+
+  const allowed = ["mcp_name", "assignee_id", "target_date", "risk_level_id"] as const;
+  const sets: string[] = [];
+  const vals: any[] = [];
+  for (const f of allowed) {
+    if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
+  }
+  if (sets.length) {
+    db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, p.id);
+  }
+  res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id), { withTasks: true }));
+});
+
+/** Status change (Kanban drag or detail view). Closing goes through /close. */
+projects.post("/:id/status", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  const { status_id, user_id } = req.body as { status_id: number; user_id: number };
+  const target = valueById(status_id);
+  if (!target) return res.status(400).json({ error: "Unknown status" });
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are never reopened (§2.2). Create a new project for this MCP instead." });
+
+  if (target.maps_to === "closed") {
+    const problems = closureProblems(p.id, { final_summary: p.final_summary, close_reason_id: p.close_reason_id });
+    if (problems.length)
+      return res.status(422).json({ error: "Closure requirements not met", problems, needs_close_form: true });
+    return res.status(422).json({ error: "Use the Close Project form", needs_close_form: true, problems: [] });
+  }
+
+  const old = valueById(p.status_id);
+  db.prepare("UPDATE projects SET status_id = ?, status_changed_date = datetime('now') WHERE id = ?").run(status_id, p.id);
+  logActivity({
+    project_id: p.id, user_id, kind: "status_change",
+    note: `changed project status from ${old?.label} to ${target.label}`,
+    old_status: old?.label, new_status: target.label,
+  });
+  res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id)));
+});
+
+const closeSchema = z.object({
+  user_id: z.number(),
+  final_summary: z.string().nullish(),
+  close_reason_id: z.number().nullish(),
+  override: z.boolean().nullish(),
+  override_reason: z.string().nullish(),
+});
+
+projects.post("/:id/close", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Project is already closed" });
+  const parsed = closeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+  const b = parsed.data;
+
+  const problems = closureProblems(p.id, b);
+  if (problems.length && !b.override)
+    return res.status(422).json({ error: "Closure requirements not met", problems });
+  if (problems.length && b.override && !b.override_reason?.trim())
+    return res.status(422).json({ error: "An override reason is required", problems });
+
+  const closed = valueByMapsTo("Project Status", "closed")!;
+  const old = valueById(p.status_id);
+  db.prepare(
+    `UPDATE projects SET status_id = ?, status_changed_date = datetime('now'), closed_date = datetime('now'),
+       closed_by = ?, close_reason_id = ?, final_summary = ? WHERE id = ?`
+  ).run(closed.id, b.user_id, b.close_reason_id ?? null, b.final_summary ?? null, p.id);
+  logActivity({
+    project_id: p.id, user_id: b.user_id, kind: "status_change",
+    note: b.override
+      ? `closed project with override: ${b.override_reason}`
+      : `closed project`,
+    old_status: old?.label, new_status: closed.label,
+  });
+  res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id)));
+});
+
+/** RAG manual override with logged reason (§4.7). */
+projects.post("/:id/rag-override", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  const { rag, reason, user_id } = req.body as { rag: string | null; reason?: string; user_id: number };
+  if (rag && !["red", "amber", "green"].includes(rag)) return res.status(400).json({ error: "Invalid RAG value" });
+  if (rag && !reason?.trim()) return res.status(400).json({ error: "An override reason is required for auditability" });
+  db.prepare("UPDATE projects SET rag_override = ?, rag_override_reason = ? WHERE id = ?").run(rag, reason ?? null, p.id);
+  logActivity({
+    project_id: p.id, user_id, kind: "system",
+    note: rag ? `manually set RAG to ${rag.toUpperCase()}: ${reason}` : "cleared manual RAG override (back to auto-calculated)",
+  });
+  res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id)));
+});
+
+// ---------- Tasks ----------
+
+projects.post("/:id/tasks", (req, res) => {
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
+  if (!p) return res.status(404).json({ error: "Project not found" });
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+  const { name, description, due_date, assigned_to, priority_id, required, user_id } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: "Task name is required" });
+  const reqErrs = requirementErrors("task", ["creation", "always"], req.body);
+  if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
+
+  const maxOrder = db
+    .prepare("SELECT MAX(step_order) AS m FROM project_tasks WHERE project_id = ?")
+    .get(p.id) as { m: number | null };
+  const notStarted = valueByMapsTo("Task Status", "not_started")!;
+  const id = db
+    .prepare(
+      `INSERT INTO project_tasks (project_id, name, description, task_type, step_order, due_date, assigned_to, status_id, priority_id, required)
+       VALUES (?, ?, ?, 'adhoc', ?, ?, ?, ?, ?, ?)`
+    )
+    .run(p.id, name.trim(), description ?? "", (maxOrder.m ?? 0) + 1, due_date ?? null, assigned_to ?? null, notStarted.id, priority_id ?? null, required ? 1 : 0)
+    .lastInsertRowid as number;
+  logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "system", note: `added ad-hoc task "${name.trim()}"` });
+  res.status(201).json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(id)));
+});
+
+export const tasks = Router();
+
+tasks.patch("/:id", (req, res) => {
+  const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
+  if (!t) return res.status(404).json({ error: "Task not found" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+
+  const tplTask = t.template_task_id
+    ? (db.prepare("SELECT can_edit FROM template_tasks WHERE id = ?").get(t.template_task_id) as any)
+    : null;
+  const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
+  if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
+  const sets: string[] = [];
+  const vals: any[] = [];
+  for (const f of editable) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
+  if (sets.length) db.prepare(`UPDATE project_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals, t.id);
+  res.json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)));
+});
+
+tasks.delete("/:id", (req, res) => {
+  const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
+  if (!t) return res.status(404).json({ error: "Task not found" });
+  if (t.task_type !== "adhoc")
+    return res.status(400).json({ error: "Standard template tasks cannot be removed (§2.4)" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+  db.prepare("DELETE FROM project_tasks WHERE id = ?").run(t.id);
+  res.json({ ok: true });
+});
+
+/**
+ * Task status change — Kanban drag or detail view share this endpoint so rules
+ * are enforced consistently (§4.2): skip-requires-reason, decision prompt,
+ * soft out-of-order warning.
+ */
+tasks.post("/:id/status", (req, res) => {
+  const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
+  if (!t) return res.status(404).json({ error: "Task not found" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+
+  const { status_id, user_id, skip_reason, decision } = req.body as {
+    status_id: number; user_id: number; skip_reason?: string; decision?: "yes" | "no";
+  };
+  const target = valueById(status_id);
+  if (!target) return res.status(400).json({ error: "Unknown status" });
+  const old = valueById(t.status_id);
+
+  if (target.maps_to === "skipped") {
+    if (t.required && t.template_task_id) {
+      const tpl = db.prepare("SELECT can_skip FROM template_tasks WHERE id = ?").get(t.template_task_id) as any;
+      if (!tpl?.can_skip && !skip_reason?.trim())
+        return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
+    }
+    if (t.required && !skip_reason?.trim())
+      return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
+  }
+
+  // Decision task (§4.4): completing it requires a yes/no answer
+  let decisionNote = "";
+  if (t.is_decision && target.maps_to === "complete") {
+    if (decision !== "yes" && decision !== "no")
+      return res.status(422).json({ error: "Answer the decision: is an action plan needed?", needs_decision: true });
+    if (decision === "yes") {
+      const notStarted = valueByMapsTo("Task Status", "not_started")!;
+      const pending = db
+        .prepare("SELECT * FROM project_tasks WHERE project_id = ? AND conditional_pending = 1")
+        .all(p.id) as any[];
+      const today = new Date();
+      for (const c of pending) {
+        const tpl = db.prepare("SELECT due_offset FROM template_tasks WHERE id = ?").get(c.template_task_id) as any;
+        const due = new Date(today);
+        due.setDate(due.getDate() + (tpl?.due_offset ?? 7));
+        db.prepare("UPDATE project_tasks SET conditional_pending = 0, status_id = ?, due_date = ? WHERE id = ?")
+          .run(notStarted.id, due.toISOString().slice(0, 10), c.id);
+      }
+      decisionNote = pending.length ? ` — action plan needed: ${pending.length} action-plan task(s) generated` : " — action plan needed";
+    } else {
+      db.prepare("DELETE FROM project_tasks WHERE project_id = ? AND conditional_pending = 1").run(p.id);
+      decisionNote = " — no action plan needed";
+    }
+  }
+
+  // Soft warning (§4.2): completing while an earlier required task is open
+  let warning: string | null = null;
+  if (DONE_TASK_KEYS.includes(target.maps_to ?? "")) {
+    const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
+    const earlier = db
+      .prepare(
+        `SELECT name FROM project_tasks WHERE project_id = ? AND required = 1 AND conditional_pending = 0
+           AND step_order < ? AND id != ? AND status_id NOT IN (${doneIds.map(() => "?").join(",")}) LIMIT 1`
+      )
+      .get(p.id, t.step_order, t.id, ...doneIds) as { name: string } | undefined;
+    if (earlier) warning = `Heads up: earlier required task "${earlier.name}" is still open.`;
+  }
+
+  const isDone = target.maps_to === "complete";
+  db.prepare(
+    `UPDATE project_tasks SET status_id = ?, skip_reason = ?, completed_date = ?, completed_by = ? WHERE id = ?`
+  ).run(
+    status_id,
+    target.maps_to === "skipped" ? (skip_reason ?? null) : t.skip_reason,
+    isDone ? new Date().toISOString().slice(0, 10) : null,
+    isDone ? user_id : null,
+    t.id
+  );
+  logActivity({
+    project_id: p.id, project_task_id: t.id, user_id, kind: "status_change",
+    note: `changed "${t.name}" from ${old?.label} to ${target.label}` +
+      (target.maps_to === "skipped" && skip_reason ? ` — reason: ${skip_reason}` : "") + decisionNote,
+    old_status: old?.label, new_status: target.label,
+  });
+  res.json({ task: serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)), warning });
+});
