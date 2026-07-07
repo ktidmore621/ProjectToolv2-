@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useRef } from "react";
-import { Rag } from "../api";
+import { csvDownload, Rag } from "../api";
 
 /** Hex → rgba for tinted chip backgrounds. */
 export function tint(hex: string, alpha: number): string {
@@ -123,4 +123,23 @@ export function Card({ children, className }: { children: ReactNode; className?:
 
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={`font-mono text-[0.92em] ${className ?? ""}`}>{children}</span>;
+}
+
+/** CSV export link — works against the server normally, generates the file in-browser in demo mode. */
+export function CsvLink({ href, children, disabled }: { href: string; children: ReactNode; disabled?: boolean }) {
+  return (
+    <a
+      href={href}
+      aria-disabled={disabled}
+      className={`inline-block rounded-lg px-3.5 py-1.5 text-sm font-medium ${
+        disabled ? "pointer-events-none bg-hairline text-muted" : "border border-hairline bg-surface hover:bg-canvas"
+      }`}
+      onClick={(e) => {
+        e.preventDefault();
+        if (!disabled) csvDownload(href);
+      }}
+    >
+      {children}
+    </a>
+  );
 }

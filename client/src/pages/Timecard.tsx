@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { addDays, api, fmtHours, isoOf, Project, weekStart } from "../api";
 import { Page } from "../components/Layout";
-import { Btn, Card, EmptyState, Field, inputCls, Modal, Mono, Skeleton } from "../components/ui";
+import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Mono, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -81,8 +81,7 @@ export function Timecard() {
             <Btn small kind="ghost" onClick={() => setStart(weekStart(new Date()))}>Today</Btn>
             <Btn small kind="ghost" onClick={() => setStart(addDays(start, 7))}>Next →</Btn>
           </div>
-          <a href={`/api/export/timelogs.csv?user_id=${currentUser.id}&start=${days[0]}&end=${end}`}
-            className="rounded-lg border border-hairline bg-surface px-3.5 py-1.5 text-sm font-medium hover:bg-canvas">Export week</a>
+          <CsvLink href={`/api/export/timelogs.csv?user_id=${currentUser.id}&start=${days[0]}&end=${end}`}>Export week</CsvLink>
           <Btn kind="primary" onClick={() => setShowLogForm(true)}>Log time</Btn>
         </>
       }

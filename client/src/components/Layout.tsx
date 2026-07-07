@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import { IS_DEMO } from "../api";
 import { useSession } from "../state";
 
 const NAV = [
@@ -49,6 +50,21 @@ export function Layout() {
             </NavLink>
           ))}
         </div>
+        {IS_DEMO && !collapsed && (
+          <div className="mx-2 mb-2 rounded-lg bg-accent-soft px-3 py-2 text-[11px] leading-snug text-ink">
+            <b>Demo mode</b> — sample data lives only in this browser.{" "}
+            <button
+              className="font-medium text-accent underline"
+              onClick={async () => {
+                const { resetDemoData } = await import("../demo/backend");
+                resetDemoData();
+                window.location.reload();
+              }}
+            >
+              Reset data
+            </button>
+          </div>
+        )}
         <div className="border-t border-hairline p-2">
           {!collapsed && (
             <label className="mb-1.5 block px-1 text-[11px] font-medium text-muted">Working as</label>

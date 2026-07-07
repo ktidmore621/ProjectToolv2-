@@ -11,6 +11,7 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "seed": "npm run seed -w server",
     "build": "npm run build -w client",
+    "build:demo": "npm run build:demo -w client && node -e \"require('fs').mkdirSync('demo',{recursive:true}); require('fs').copyFileSync('client/dist-demo/index.html','demo/Customer Assignment Tool (Demo).html')\"",
     "start": "npm run start -w server",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
   },

@@ -1,4 +1,10 @@
-/** Thin fetch layer. All endpoints live under /api (Vite proxies to the Express server). */
+/**
+ * Thin fetch layer. All endpoints live under /api (Vite proxies to the Express
+ * server). In the standalone demo build (VITE_DEMO=1) every call is answered
+ * by the in-browser backend in src/demo/ instead — no server needed.
+ */
+
+export const IS_DEMO = import.meta.env.VITE_DEMO === "1";
 
 export class ApiError extends Error {
   status: number;
@@ -11,6 +17,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  if (IS_DEMO) {
+    const { demoRequest } = await import("./demo/backend");
+    const r = demoRequest(method, url, body);
+    if (r.status >= 400) throw new ApiError(r.status, r.data);
+    return r.data as T;
+  }
   const res = await fetch(url, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -122,6 +134,21 @@ export interface Task {
   skip_reason: string | null;
   completed_date: string | null;
   completed_by_name: string | null;
+}
+
+/** CSV export: normal build navigates to the server endpoint; demo build generates the file in-browser. */
+export async function csvDownload(url: string) {
+  if (!IS_DEMO) {
+    window.location.href = url;
+    return;
+  }
+  const { demoCsv } = await import("./demo/backend");
+  const { filename, csv } = demoCsv(url);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 export function fmtDate(iso: string | null | undefined): string {

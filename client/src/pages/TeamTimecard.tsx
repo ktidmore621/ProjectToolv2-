@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { addDays, api, fmtHours, isoOf, weekStart } from "../api";
 import { Page } from "../components/Layout";
-import { Btn, Card, inputCls, Mono, Skeleton } from "../components/ui";
+import { Btn, Card, CsvLink, inputCls, Mono, Skeleton } from "../components/ui";
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -52,8 +52,7 @@ export function TeamTimecard() {
             <Btn small kind="ghost" onClick={() => setStart(weekStart(new Date()))}>Today</Btn>
             <Btn small kind="ghost" onClick={() => setStart(addDays(start, 7))}>Next →</Btn>
           </div>
-          <a href={`/api/export/timelogs.csv?start=${days[0]}&end=${end}`}
-            className="rounded-lg border border-hairline bg-surface px-3.5 py-1.5 text-sm font-medium hover:bg-canvas">Export week</a>
+          <CsvLink href={`/api/export/timelogs.csv?start=${days[0]}&end=${end}`}>Export week</CsvLink>
         </>
       }
     >
@@ -120,12 +119,11 @@ export function TeamTimecard() {
                 <span className="text-muted">–</span>
                 <input type="date" className={inputCls} value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} aria-label="Range end" />
               </div>
-              <a
-                className={`mt-3 inline-block rounded-lg px-3.5 py-1.5 text-sm font-medium ${range.start && range.end ? "bg-primary text-white hover:bg-primary/90" : "pointer-events-none bg-hairline text-muted"}`}
-                href={`/api/export/timelogs.csv?start=${range.start}&end=${range.end}`}
-              >
-                Export CSV
-              </a>
+              <div className="mt-3">
+                <CsvLink href={`/api/export/timelogs.csv?start=${range.start}&end=${range.end}`} disabled={!range.start || !range.end}>
+                  Export CSV
+                </CsvLink>
+              </div>
             </Card>
           </div>
         </div>

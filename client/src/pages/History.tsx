@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtDate, Project } from "../api";
 import { Page } from "../components/Layout";
-import { Card, Chip, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
+import { Card, Chip, CsvLink, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
 
 /** Historical / Closed projects — permanent read-only archive (§2.2, §9). */
 export function History() {
@@ -26,7 +26,7 @@ export function History() {
       actions={
         <>
           <input className={inputCls + " !w-56"} placeholder="Search closed projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search closed projects" />
-          <a href="/api/export/wins.csv" className="rounded-lg border border-hairline bg-surface px-3.5 py-1.5 text-sm font-medium hover:bg-canvas">Wins report (CSV)</a>
+          <CsvLink href="/api/export/wins.csv">Wins report (CSV)</CsvLink>
         </>
       }
     >

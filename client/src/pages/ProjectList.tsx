@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, Project, todayIso } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
 import { Page } from "../components/Layout";
-import { Btn, Card, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
+import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
 export function ProjectList() {
@@ -35,7 +35,7 @@ export function ProjectList() {
         <>
           <input className={inputCls + " !w-56"} placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
           <Btn onClick={() => setShowImport(true)}>Import CSV</Btn>
-          <a href="/api/export/projects.csv?scope=active" className="rounded-lg border border-hairline bg-surface px-3.5 py-1.5 text-sm font-medium hover:bg-canvas">Export CSV</a>
+          <CsvLink href="/api/export/projects.csv?scope=active">Export CSV</CsvLink>
           <Btn kind="primary" onClick={() => setShowNew(true)}>New project</Btn>
         </>
       }
