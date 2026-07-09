@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import {
-  CLOSED_KEYS, generateTasksFromTemplate, logActivity, nextProjectCode, serializeProject, valueByMapsTo, valuesFor,
+  CLOSED_KEYS, generateTasksFromTemplate, logActivity, nextProjectCode, serializeProject, serializeWin, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const importexport = Router();
@@ -52,8 +52,27 @@ importexport.get("/export/timelogs.csv", (req, res) => {
   sendCsv(res, "time-entries.csv", csv);
 });
 
-/** Wins / closure report (§8). */
-importexport.get("/export/wins.csv", (_req, res) => {
+/**
+ * Portfolio-wide structured wins export (v2 §3) — every win across every
+ * project, filterable by occurred-date range (?start=&end=).
+ */
+importexport.get("/export/wins.csv", (req, res) => {
+  const { start, end } = req.query as Record<string, string>;
+  let sql = "SELECT * FROM wins WHERE 1=1";
+  const params: any[] = [];
+  if (start) { sql += " AND occurred_date >= ?"; params.push(start); }
+  if (end) { sql += " AND occurred_date <= ?"; params.push(end); }
+  sql += " ORDER BY occurred_date DESC, id DESC";
+  const rows = (db.prepare(sql).all(...params) as any[]).map(serializeWin);
+  const csv = toCsv(
+    ["Occurred", "Logged", "Project ID", "MCP #", "MCP Name", "Category", "Win", "Logged By"],
+    rows.map((w) => [w.occurred_date, w.logged_date?.slice(0, 10) ?? "", w.project_code, w.mcp_number, w.mcp_name, w.category_label ?? "", w.description, w.logged_by_name ?? ""])
+  );
+  sendCsv(res, "wins-report.csv", csv);
+});
+
+/** Closure report — the v1 "wins" export, now clearly named: closure summaries of closed projects (§8). */
+importexport.get("/export/closures.csv", (_req, res) => {
   const closedIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const rows = (db
     .prepare(`SELECT * FROM projects WHERE status_id IN (${closedIds.map(() => "?").join(",")}) ORDER BY closed_date`)
@@ -62,7 +81,7 @@ importexport.get("/export/wins.csv", (_req, res) => {
     ["Project ID", "MCP #", "MCP Name", "Assignee", "Assigned", "Closed", "Closed By", "Close Reason", "Final Summary"],
     rows.map((p) => [p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, p.assignment_date, p.closed_date ?? "", p.closed_by_name ?? "", p.close_reason_label ?? "", p.final_summary ?? ""])
   );
-  sendCsv(res, "wins-report.csv", csv);
+  sendCsv(res, "closure-report.csv", csv);
 });
 
 // ---------- CSV import of projects with validation + preview (§8) ----------

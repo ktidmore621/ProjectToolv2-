@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import {
   CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, generateTasksFromTemplate, isClosedStatus,
-  logActivity, nextProjectCode, serializeProject, serializeTask, valueById, valueByMapsTo, valuesFor,
+  logActivity, nextProjectCode, serializeActivity, serializeProject, serializeTask, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -202,7 +202,7 @@ projects.post("/:id/tasks", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
-  const { name, description, due_date, assigned_to, priority_id, required, user_id } = req.body;
+  const { name, description, due_date, assigned_to, priority_id, required, user_id, initial_note } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: "Task name is required" });
   const reqErrs = requirementErrors("task", ["creation", "always"], req.body);
   if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
@@ -219,10 +219,57 @@ projects.post("/:id/tasks", (req, res) => {
     .run(p.id, name.trim(), description ?? "", (maxOrder.m ?? 0) + 1, due_date ?? null, assigned_to ?? null, notStarted.id, priority_id ?? null, required ? 1 : 0)
     .lastInsertRowid as number;
   logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "system", note: `added ad-hoc task "${name.trim()}"` });
+  if (initial_note?.trim())
+    logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "note", note: initial_note.trim() });
   res.status(201).json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(id)));
 });
 
 export const tasks = Router();
+
+/**
+ * Cross-project task list (v2 §1). Tasks from closed projects are excluded —
+ * they live in History. Filters are combinable: overdue=1, blocked=1,
+ * assigned_to, project_id, status_id.
+ */
+tasks.get("/", (req, res) => {
+  const { overdue, blocked, assigned_to, project_id, status_id } = req.query as Record<string, string>;
+  const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
+  const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
+  const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
+  const today = new Date().toISOString().slice(0, 10);
+
+  let sql = `SELECT t.*, p.project_code, p.mcp_name, p.assignee_id AS project_assignee_id FROM project_tasks t
+             JOIN projects p ON p.id = t.project_id
+             WHERE t.conditional_pending = 0
+               AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`;
+  const params: any[] = [...closedStatusIds];
+  if (project_id) { sql += " AND t.project_id = ?"; params.push(Number(project_id)); }
+  if (status_id) { sql += " AND t.status_id = ?"; params.push(Number(status_id)); }
+  if (blocked === "1" && blockedId) { sql += " AND t.status_id = ?"; params.push(blockedId); }
+  if (overdue === "1") {
+    sql += ` AND t.due_date < ? AND t.status_id NOT IN (${doneIds.map(() => "?").join(",")})`;
+    params.push(today, ...doneIds);
+  }
+  // Unassigned tasks belong to the project assignee, same rule as the dashboard
+  if (assigned_to) {
+    sql += " AND (t.assigned_to = ? OR (t.assigned_to IS NULL AND p.assignee_id = ?))";
+    params.push(Number(assigned_to), Number(assigned_to));
+  }
+  sql += " ORDER BY (t.due_date IS NULL), t.due_date, p.project_code, t.step_order";
+  const rows = db.prepare(sql).all(...params) as any[];
+  res.json(rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name })));
+});
+
+/** All activities linked to this task through the many-to-many join (v2 §6). */
+tasks.get("/:id/activities", (req, res) => {
+  const t = db.prepare("SELECT id FROM project_tasks WHERE id = ?").get(req.params.id);
+  if (!t) return res.status(404).json({ error: "Task not found" });
+  const rows = db.prepare(
+    `SELECT a.* FROM task_activity_links l JOIN activities a ON a.id = l.activity_id
+     WHERE l.project_task_id = ? ORDER BY a.activity_date DESC, a.id DESC`
+  ).all(req.params.id) as any[];
+  res.json(rows.map(serializeActivity));
+});
 
 tasks.patch("/:id", (req, res) => {
   const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;

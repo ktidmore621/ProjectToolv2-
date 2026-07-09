@@ -134,6 +134,53 @@ export interface Task {
   skip_reason: string | null;
   completed_date: string | null;
   completed_by_name: string | null;
+  activity_count: number;
+  note_count: number;
+  latest_note: { note: string; activity_date: string; user_name: string | null } | null;
+  // present on cross-project task rows
+  project_code?: string;
+  mcp_name?: string;
+}
+
+export interface Activity {
+  id: number;
+  project_id: number;
+  project_task_id: number | null;
+  user_id: number | null;
+  user_name: string;
+  activity_date: string;
+  kind: "note" | "activity" | "status_change" | "system";
+  category_id: number | null;
+  category_label: string | null;
+  category_color: string | null;
+  activity_type_id: number | null;
+  activity_type_label: string | null;
+  activity_type_color: string | null;
+  activity_type_key: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  duration_minutes: number | null;
+  note: string;
+  task_name: string | null;
+  project_code: string | null;
+  mcp_name: string | null;
+  linked_tasks: { id: number; name: string }[];
+}
+
+export interface Win {
+  id: number;
+  project_id: number;
+  description: string;
+  category_id: number | null;
+  category_label: string | null;
+  category_color: string | null;
+  category_key: string | null;
+  occurred_date: string;
+  logged_date: string;
+  logged_by_name: string | null;
+  project_code: string | null;
+  mcp_name: string | null;
+  mcp_number: string | null;
 }
 
 /** CSV export: normal build navigates to the server endpoint; demo build generates the file in-browser. */
@@ -155,6 +202,22 @@ export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso.slice(0, 10) + "T00:00:00");
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** '13:05' → '1:05 PM'. */
+export function fmtTime(hhmm: string | null | undefined): string {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  const am = h < 12;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${am ? "AM" : "PM"}`;
+}
+
+/** 'July 9th' style date for the dashboard header and This Week groups. */
+export function fmtDayOrdinal(d: Date): string {
+  const n = d.getDate();
+  const suffix = n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
+  return `${d.toLocaleDateString(undefined, { month: "long" })} ${n}${suffix}`;
 }
 
 export function fmtHours(totalMinutes: number): string {

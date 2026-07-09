@@ -117,8 +117,8 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
-export function Card({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-xl border border-hairline bg-surface shadow-card ${className ?? ""}`}>{children}</div>;
+export function Card({ children, className, style }: { children: ReactNode; className?: string; style?: React.CSSProperties }) {
+  return <div className={`rounded-xl border border-hairline bg-surface shadow-card ${className ?? ""}`} style={style}>{children}</div>;
 }
 
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {

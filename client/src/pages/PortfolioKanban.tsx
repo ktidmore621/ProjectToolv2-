@@ -3,11 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, PickValue, Project } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
-import { Page } from "../components/Layout";
 import { inputCls, ragEdge, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
-export function PortfolioKanban() {
+/** Portfolio Kanban — v1's standalone screen, now a view state inside Projects (v2 §1). */
+export function PortfolioKanbanView() {
   const { activeValues } = useConfig();
   const { users, currentUser } = useSession();
   const toast = useToast();
@@ -69,10 +69,8 @@ export function PortfolioKanban() {
   }
 
   return (
-    <Page
-      title="Portfolio Kanban"
-      actions={
-        <>
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
           <select className={inputCls + " !w-auto"} value={filters.assignee_id} aria-label="Filter by assignee"
             onChange={(e) => setFilters({ ...filters, assignee_id: e.target.value })}>
             <option value="">All assignees</option>
@@ -93,9 +91,7 @@ export function PortfolioKanban() {
             <option value="">All templates</option>
             {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
-        </>
-      }
-    >
+      </div>
       {!projects ? (
         <div className="flex gap-3">{[...Array(5)].map((_, i) => <Skeleton key={i} className="h-96 w-72" />)}</div>
       ) : (
@@ -110,7 +106,7 @@ export function PortfolioKanban() {
           </DragOverlay>
         </DndContext>
       )}
-    </Page>
+    </>
   );
 }
 

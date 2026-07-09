@@ -11,6 +11,7 @@ const RESET = process.argv.includes("--reset");
 
 if (RESET) {
   db.exec(`
+    DELETE FROM task_activity_links; DELETE FROM wins;
     DELETE FROM activities; DELETE FROM time_logs; DELETE FROM project_tasks;
     DELETE FROM projects; DELETE FROM template_tasks; DELETE FROM workflow_templates;
     DELETE FROM picklist_values; DELETE FROM picklists; DELETE FROM field_requirements;
@@ -101,6 +102,18 @@ export function seed() {
     ["Issue", "#B0632F", "issue"],
     ["Action Plan", "#C99239", "action_plan"],
     ["Resolution", "#4E9468", "resolution"],
+  ]);
+  makeList("Activity Type", "activity", 0, [
+    ["Phone Call", "#12808A", "phone_call", 1],
+    ["Site Visit", "#2E4E8F", "site_visit"],
+    ["Client Meeting", "#8A6FB8", "client_meeting"],
+    ["Other Customer Interaction", "#5C6B84", "other"],
+  ]);
+  makeList("Win Category", "win", 0, [
+    ["Cost Savings", "#4E9468", "cost_savings", 1],
+    ["Process Improvement", "#12808A", "process_improvement"],
+    ["Relationship Recovery", "#8A6FB8", "relationship_recovery"],
+    ["Escalation Resolved", "#C99239", "escalation_resolved"],
   ]);
   makeList("Time Log Activity Type", "time_log", 0, [
     ["Billing Analysis", "#2E4E8F", "billing_analysis", 1],
@@ -215,6 +228,7 @@ export function seed() {
       ["due_date", "Due Date", 1, 0],
       ["priority_label", "Priority", 1, 0],
       ["required", "Required", 1, 0],
+      ["activity_count", "Activities", 1, 0],
       ["task_type", "Type", 0, 0],
     ],
     project_header: [
@@ -274,16 +288,23 @@ function seedDemo(users: number[], tplId: number) {
     closed?: { daysAgo: number; reason: string; summary: string };
     completeThrough?: number; // complete the first N template tasks
     blockTask?: number; // 1-based step to mark blocked
+    wins?: [description: string, categoryKey: string, occurredDaysAgo: number][];
   };
   const demos: Demo[] = [
-    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3 },
-    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2 },
+    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
+      wins: [["Recovered $4,200 in misapplied charges found during the billing history review.", "cost_savings", 6]] },
+    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
+      wins: [["Customer agreed to a monthly reconciliation cadence going forward.", "process_improvement", 4]] },
     { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
-    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5 },
+    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
+      wins: [["De-escalated the pending complaint; customer re-engaged with the action plan.", "escalation_resolved", 10]] },
     { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], assignedDaysAgo: 3, status: "new", risk: "low" },
-    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8 },
-    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." } },
-    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." } },
+    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
+      wins: [["Corrected rate class saves the co-op roughly $700/month going forward.", "cost_savings", 8]] },
+    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
+      wins: [["Rebuilt trust with the fleet manager after the disputed invoices were credited.", "relationship_recovery", 20], ["Meter remapping cut disputed line items by 12%.", "cost_savings", 16]] },
+    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
+      wins: [["Consolidated duplicate accounts into a single clean billing record.", "process_improvement", 35]] },
   ];
 
   let n = 0;
@@ -360,6 +381,36 @@ function seedDemo(users: number[], tplId: number) {
     ];
     for (const [cat, note] of noteSamples) {
       logActivity({ project_id: pid, user_id: d.assignee, kind: "note", category_id: noteCat(cat), note });
+    }
+
+    // v2: logged activities (calls / visits / meetings) with times, many-to-many linked to tasks
+    const actTypeIdOf = (key: string) => valueByMapsTo("Activity Type", key)!.id;
+    const insAct = db.prepare(
+      `INSERT INTO activities (project_id, user_id, activity_date, kind, activity_type_id, start_time, end_time, note)
+       VALUES (?, ?, ?, 'activity', ?, ?, ?, ?)`
+    );
+    const insLink = db.prepare("INSERT OR IGNORE INTO task_activity_links (project_task_id, activity_id) VALUES (?, ?)");
+    if (!isClosed && completeN > 0) {
+      const visit = insAct.run(pid, d.assignee, iso(3) + " 10:00:00", actTypeIdOf("site_visit"), "10:00", "11:30",
+        `On-site visit at ${d.mcp[1]} — walked the metering setup with facilities.`).lastInsertRowid as number;
+      if (allTasks[2]) insLink.run(allTasks[2].id, visit);
+      if (allTasks[3]) insLink.run(allTasks[3].id, visit);
+      const call = insAct.run(pid, d.assignee, iso(0) + " 09:30:00", actTypeIdOf("phone_call"), "09:30", "10:00",
+        "Check-in call on outstanding billing questions.").lastInsertRowid as number;
+      if (allTasks[1]) insLink.run(allTasks[1].id, call);
+      const meeting = insAct.run(pid, d.assignee, iso(-(1 + (n % 3))) + " 14:00:00", actTypeIdOf("client_meeting"), "14:00", "15:00",
+        "Review findings and agree next steps with the customer.").lastInsertRowid as number;
+      if (allTasks[4]) insLink.run(allTasks[4].id, meeting);
+    }
+
+    // v2: structured wins
+    const winCatId = (key: string) => valueByMapsTo("Win Category", key)!.id;
+    const insWin = db.prepare(
+      `INSERT INTO wins (project_id, description, category_id, occurred_date, logged_date, logged_by)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const [descr, catKey, daysAgo] of d.wins ?? []) {
+      insWin.run(pid, descr, winCatId(catKey), iso(daysAgo), iso(Math.max(0, daysAgo - 1)) + " 09:00:00", d.assignee);
     }
 
     // Time logs across the current + previous week

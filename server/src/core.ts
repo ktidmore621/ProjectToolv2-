@@ -270,6 +270,15 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
   };
 }
 
+const taskActivityCount = db.prepare("SELECT COUNT(*) AS n FROM task_activity_links WHERE project_task_id = ?");
+const taskNoteCount = db.prepare("SELECT COUNT(*) AS n FROM activities WHERE project_task_id = ? AND kind = 'note'");
+const taskLatestNote = db.prepare(
+  `SELECT a.note, a.activity_date, u.name AS user_name FROM activities a
+   LEFT JOIN users u ON u.id = a.user_id
+   WHERE a.project_task_id = ? AND a.kind = 'note'
+   ORDER BY a.activity_date DESC, a.id DESC LIMIT 1`
+);
+
 export function serializeTask(t: any) {
   const status = valueById(t.status_id);
   const priority = valueById(t.priority_id);
@@ -284,5 +293,65 @@ export function serializeTask(t: any) {
     priority_color: priority?.color ?? null,
     assigned_to_name: assigned?.name ?? null,
     completed_by_name: completedBy?.name ?? null,
+    activity_count: (taskActivityCount.get(t.id) as { n: number }).n,
+    note_count: (taskNoteCount.get(t.id) as { n: number }).n,
+    latest_note: (taskLatestNote.get(t.id) as { note: string; activity_date: string; user_name: string | null } | undefined) ?? null,
+  };
+}
+
+/** Minutes between 'HH:MM' start/end times (same day); null when either is missing. */
+export function durationMinutes(start: string | null, end: string | null): number | null {
+  if (!start || !end || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return null;
+  const m = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+  return Math.max(0, m(end) - m(start));
+}
+
+const linkedTasksFor = db.prepare(
+  `SELECT pt.id, pt.name FROM task_activity_links l
+   JOIN project_tasks pt ON pt.id = l.project_task_id
+   WHERE l.activity_id = ? ORDER BY pt.step_order, pt.id`
+);
+
+export function serializeActivity(a: any) {
+  const user = a.user_id ? (userName.get(a.user_id) as { name: string } | undefined) : undefined;
+  const cat = valueById(a.category_id);
+  const type = valueById(a.activity_type_id);
+  const task = a.project_task_id
+    ? (db.prepare("SELECT name FROM project_tasks WHERE id = ?").get(a.project_task_id) as { name: string } | undefined)
+    : undefined;
+  const project = db
+    .prepare("SELECT project_code, mcp_name FROM projects WHERE id = ?")
+    .get(a.project_id) as { project_code: string; mcp_name: string } | undefined;
+  return {
+    ...a,
+    user_name: user?.name ?? "System",
+    category_label: cat?.label ?? null,
+    category_color: cat?.color ?? null,
+    activity_type_label: type?.label ?? null,
+    activity_type_color: type?.color ?? null,
+    activity_type_key: type?.maps_to ?? null,
+    duration_minutes: durationMinutes(a.start_time, a.end_time),
+    task_name: task?.name ?? null,
+    project_code: project?.project_code ?? null,
+    mcp_name: project?.mcp_name ?? null,
+    linked_tasks: linkedTasksFor.all(a.id),
+  };
+}
+
+export function serializeWin(w: any) {
+  const cat = valueById(w.category_id);
+  const project = db
+    .prepare("SELECT project_code, mcp_name, mcp_number FROM projects WHERE id = ?")
+    .get(w.project_id) as { project_code: string; mcp_name: string; mcp_number: string } | undefined;
+  const loggedBy = w.logged_by ? (userName.get(w.logged_by) as { name: string } | undefined) : undefined;
+  return {
+    ...w,
+    category_label: cat?.label ?? null,
+    category_color: cat?.color ?? null,
+    category_key: cat?.maps_to ?? null,
+    project_code: project?.project_code ?? null,
+    mcp_name: project?.mcp_name ?? null,
+    mcp_number: project?.mcp_number ?? null,
+    logged_by_name: loggedBy?.name ?? null,
   };
 }

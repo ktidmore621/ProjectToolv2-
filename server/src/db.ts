@@ -123,11 +123,34 @@ CREATE TABLE IF NOT EXISTS activities (
   project_task_id INTEGER REFERENCES project_tasks(id) ON DELETE SET NULL,
   user_id INTEGER REFERENCES users(id),
   activity_date TEXT NOT NULL DEFAULT (datetime('now')),
-  kind TEXT NOT NULL DEFAULT 'note',          -- 'note' | 'status_change' | 'system'
+  kind TEXT NOT NULL DEFAULT 'note',          -- 'note' | 'activity' | 'status_change' | 'system'
   category_id INTEGER REFERENCES picklist_values(id),
+  activity_type_id INTEGER REFERENCES picklist_values(id), -- kind='activity': Phone Call / Site Visit / …
+  start_time TEXT,                            -- 'HH:MM' (kind='activity')
+  end_time TEXT,                              -- 'HH:MM' (kind='activity')
   note TEXT DEFAULT '',
   old_status TEXT,
   new_status TEXT
+);
+
+-- v2: many-to-many links between activities and project tasks
+CREATE TABLE IF NOT EXISTS task_activity_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_task_id INTEGER NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+  activity_id INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+  UNIQUE(project_task_id, activity_id)
+);
+
+-- v2: structured wins, loggable at any point in a project's lifecycle.
+-- projects.final_summary stays as the separate closure narrative.
+CREATE TABLE IF NOT EXISTS wins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  category_id INTEGER REFERENCES picklist_values(id),
+  occurred_date TEXT NOT NULL,
+  logged_date TEXT NOT NULL DEFAULT (datetime('now')),
+  logged_by INTEGER REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS field_requirements (
@@ -157,6 +180,68 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+
+// ---- v2 upgrade migrations (safe no-ops on fresh databases) ----
+
+function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+}
+ensureColumn("activities", "activity_type_id", "INTEGER REFERENCES picklist_values(id)");
+ensureColumn("activities", "start_time", "TEXT");
+ensureColumn("activities", "end_time", "TEXT");
+
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_activities_task_date ON activities(project_task_id, activity_date);
+CREATE INDEX IF NOT EXISTS idx_task_activity_links_task ON task_activity_links(project_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_activity_links_activity ON task_activity_links(activity_id);
+CREATE INDEX IF NOT EXISTS idx_wins_project ON wins(project_id);
+`);
+
+/** Config a v1-seeded database is missing. Fresh installs get all of this from seed.ts. */
+export function ensureV2Config() {
+  const seeded = (db.prepare("SELECT COUNT(*) AS n FROM picklists").get() as { n: number }).n > 0;
+  if (!seeded) return;
+
+  const addList = (name: string, objectType: string, values: [string, string, string, number?][]) => {
+    const exists = db.prepare("SELECT id FROM picklists WHERE name = ?").get(name);
+    if (exists) return;
+    const pid = db.prepare("INSERT INTO picklists (name, object_type, is_system) VALUES (?, ?, 0)").run(name, objectType)
+      .lastInsertRowid as number;
+    values.forEach(([label, color, mapsTo, isDefault], i) =>
+      db.prepare(
+        "INSERT INTO picklist_values (picklist_id, label, sort_order, color, is_active, is_default, maps_to) VALUES (?, ?, ?, ?, 1, ?, ?)"
+      ).run(pid, label, i + 1, color, isDefault ?? 0, mapsTo)
+    );
+  };
+  addList("Activity Type", "activity", [
+    ["Phone Call", "#12808A", "phone_call", 1],
+    ["Site Visit", "#2E4E8F", "site_visit"],
+    ["Client Meeting", "#8A6FB8", "client_meeting"],
+    ["Other Customer Interaction", "#5C6B84", "other"],
+  ]);
+  addList("Win Category", "win", [
+    ["Cost Savings", "#4E9468", "cost_savings", 1],
+    ["Process Improvement", "#12808A", "process_improvement"],
+    ["Relationship Recovery", "#8A6FB8", "relationship_recovery"],
+    ["Escalation Resolved", "#C99239", "escalation_resolved"],
+  ]);
+
+  const hasTaskListLayout =
+    (db.prepare("SELECT COUNT(*) AS n FROM view_layout_fields WHERE view_name = 'task_list'").get() as { n: number }).n > 0;
+  const hasActivityCol = db
+    .prepare("SELECT id FROM view_layout_fields WHERE view_name = 'task_list' AND field_key = 'activity_count'")
+    .get();
+  if (hasTaskListLayout && !hasActivityCol) {
+    const max = db
+      .prepare("SELECT MAX(display_order) AS m FROM view_layout_fields WHERE view_name = 'task_list'")
+      .get() as { m: number | null };
+    db.prepare(
+      "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES ('task_list', 'activity_count', 'Activities', ?, 1, 0)"
+    ).run((max.m ?? 0) + 1);
+  }
+}
+ensureV2Config();
 
 export function getSetting(key: string, fallback: string): string {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as

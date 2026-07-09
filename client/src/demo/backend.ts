@@ -69,6 +69,10 @@ function computeRag(p: Row): { rag: string; reason: string; overridden: boolean 
 function serializeTask(t: Row) {
   const status = valueById(t.status_id);
   const priority = valueById(t.priority_id);
+  const taskNotes = db.activities
+    .filter((a) => a.project_task_id === t.id && a.kind === "note")
+    .sort((a, b) => (a.activity_date < b.activity_date ? 1 : a.activity_date > b.activity_date ? -1 : b.id - a.id));
+  const latest = taskNotes[0];
   return {
     ...t,
     status_label: status?.label ?? "—",
@@ -78,6 +82,57 @@ function serializeTask(t: Row) {
     priority_color: priority?.color ?? null,
     assigned_to_name: userName(t.assigned_to) ?? null,
     completed_by_name: userName(t.completed_by) ?? null,
+    activity_count: db.task_activity_links.filter((l) => l.project_task_id === t.id).length,
+    note_count: taskNotes.length,
+    latest_note: latest ? { note: latest.note, activity_date: latest.activity_date, user_name: userName(latest.user_id) ?? null } : null,
+  };
+}
+
+function durationMinutes(start: string | null, end: string | null): number | null {
+  if (!start || !end || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return null;
+  const m = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+  return Math.max(0, m(end) - m(start));
+}
+
+function serializeActivity(a: Row) {
+  const cat = valueById(a.category_id);
+  const type = valueById(a.activity_type_id);
+  const p = db.projects.find((x) => x.id === a.project_id);
+  const task = db.project_tasks.find((x) => x.id === a.project_task_id);
+  const linked = db.task_activity_links
+    .filter((l) => l.activity_id === a.id)
+    .map((l) => db.project_tasks.find((t) => t.id === l.project_task_id))
+    .filter((t): t is Row => !!t)
+    .sort((x, y) => x.step_order - y.step_order)
+    .map((t) => ({ id: t.id, name: t.name }));
+  return {
+    ...a,
+    user_name: userName(a.user_id) ?? "System",
+    category_label: cat?.label ?? null,
+    category_color: cat?.color ?? null,
+    activity_type_label: type?.label ?? null,
+    activity_type_color: type?.color ?? null,
+    activity_type_key: type?.maps_to ?? null,
+    duration_minutes: durationMinutes(a.start_time, a.end_time),
+    task_name: task?.name ?? null,
+    project_code: p?.project_code ?? null,
+    mcp_name: p?.mcp_name ?? null,
+    linked_tasks: linked,
+  };
+}
+
+function serializeWin(w: Row): Row {
+  const cat = valueById(w.category_id);
+  const p = db.projects.find((x) => x.id === w.project_id);
+  return {
+    ...w,
+    category_label: cat?.label ?? null,
+    category_color: cat?.color ?? null,
+    category_key: cat?.maps_to ?? null,
+    project_code: p?.project_code ?? null,
+    mcp_name: p?.mcp_name ?? null,
+    mcp_number: p?.mcp_number ?? null,
+    logged_by_name: userName(w.logged_by) ?? null,
   };
 }
 
@@ -229,7 +284,8 @@ route("DELETE", "/api/picklist-values/:id", (m) => {
     db.projects.filter((p) => [p.status_id, p.risk_level_id, p.close_reason_id].includes(v.id)).length +
     db.project_tasks.filter((t) => [t.status_id, t.priority_id].includes(v.id)).length +
     db.time_logs.filter((l) => l.activity_type_id === v.id).length +
-    db.activities.filter((a) => a.category_id === v.id).length +
+    db.activities.filter((a) => a.category_id === v.id || a.activity_type_id === v.id).length +
+    db.wins.filter((w) => w.category_id === v.id).length +
     db.template_tasks.filter((t) => t.default_priority_id === v.id).length;
   if (refs > 0) {
     v.is_active = 0;
@@ -481,10 +537,55 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
   };
   db.project_tasks.push(t);
   logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "system", note: `added ad-hoc task "${t.name}"` });
+  if (b.initial_note?.trim())
+    logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "note", note: b.initial_note.trim() });
   return ok(serializeTask(t), 201);
 });
 
 // ---- tasks ----
+/** Cross-project task list (v2 §1) — combinable filters, closed projects excluded. */
+route("GET", "/api/tasks", (_m, q) => {
+  const closedIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
+  const done = doneStatusIds();
+  const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
+  const t = today();
+  let out = db.project_tasks
+    .filter((x) => !x.conditional_pending)
+    .filter((x) => {
+      const p = db.projects.find((pp) => pp.id === x.project_id);
+      return p && !closedIds.includes(p.status_id);
+    });
+  if (q.get("project_id")) out = out.filter((x) => x.project_id === Number(q.get("project_id")));
+  if (q.get("status_id")) out = out.filter((x) => x.status_id === Number(q.get("status_id")));
+  if (q.get("blocked") === "1" && blockedId) out = out.filter((x) => x.status_id === blockedId);
+  if (q.get("overdue") === "1") out = out.filter((x) => x.due_date && x.due_date < t && !done.includes(x.status_id));
+  if (q.get("assigned_to")) {
+    const uid = Number(q.get("assigned_to"));
+    out = out.filter((x) => {
+      if (x.assigned_to) return x.assigned_to === uid;
+      return db.projects.find((pp) => pp.id === x.project_id)?.assignee_id === uid;
+    });
+  }
+  out = out.slice().sort((a, b) =>
+    ((a.due_date ? "0" + a.due_date : "1") + String(a.step_order).padStart(4, "0"))
+      .localeCompare((b.due_date ? "0" + b.due_date : "1") + String(b.step_order).padStart(4, "0"))
+  );
+  return ok(out.map((x) => {
+    const p = db.projects.find((pp) => pp.id === x.project_id)!;
+    return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name };
+  }));
+});
+/** All activities linked to a task through the join table (v2 §6). */
+route("GET", "/api/tasks/:id/activities", (m) => {
+  const t = db.project_tasks.find((x) => x.id === Number(m.id));
+  if (!t) return err(404, "Task not found");
+  const acts = db.task_activity_links
+    .filter((l) => l.project_task_id === t.id)
+    .map((l) => db.activities.find((a) => a.id === l.activity_id))
+    .filter((a): a is Row => !!a)
+    .sort((a, b) => (a.activity_date < b.activity_date ? 1 : a.activity_date > b.activity_date ? -1 : b.id - a.id));
+  return ok(acts.map(serializeActivity));
+});
 route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   const t = db.project_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Task not found");
@@ -503,6 +604,7 @@ route("DELETE", "/api/tasks/:id", (m) => {
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
+  db.task_activity_links = db.task_activity_links.filter((l) => l.project_task_id !== t.id);
   return ok({ ok: true });
 });
 route("POST", "/api/tasks/:id/status", (m, _q, b) => {
@@ -597,30 +699,107 @@ route("DELETE", "/api/timelogs/:id", (m) => {
   return ok({ ok: true });
 });
 
-// ---- activities ----
+// ---- activities (Notes & Activity module, v2 §5) ----
 route("GET", "/api/activities", (_m, q) => {
   let out = db.activities.slice();
   if (q.get("project_id")) out = out.filter((a) => a.project_id === Number(q.get("project_id")));
-  if (q.get("kind")) out = out.filter((a) => a.kind === q.get("kind"));
+  if (q.get("task_id")) out = out.filter((a) => a.project_task_id === Number(q.get("task_id")));
+  if (q.get("kind")) {
+    const kinds = q.get("kind")!.split(",").map((k) => k.trim()).filter(Boolean);
+    out = out.filter((a) => kinds.includes(a.kind));
+  }
   out.sort((a, b) => (a.activity_date < b.activity_date ? 1 : a.activity_date > b.activity_date ? -1 : b.id - a.id));
-  return ok(out.map((a) => ({
-    ...a,
-    user_name: userName(a.user_id) ?? "System",
-    category_label: valueById(a.category_id)?.label ?? null,
-    category_color: valueById(a.category_id)?.color ?? null,
-    task_name: db.project_tasks.find((t) => t.id === a.project_task_id)?.name ?? null,
-  })));
+  const limit = Number(q.get("limit"));
+  if (limit > 0) out = out.slice(0, limit);
+  return ok(out.map(serializeActivity));
+});
+route("GET", "/api/activities/:id", (m) => {
+  const a = db.activities.find((x) => x.id === Number(m.id));
+  if (!a) return err(404, "Activity not found");
+  return ok(serializeActivity(a));
 });
 route("POST", "/api/activities", (_m, _q, b) => {
+  const isActivity = b.kind === "activity";
   if (!b.project_id || !b.note?.trim()) return err(400, "Project and note text are required");
   const p = db.projects.find((x) => x.id === b.project_id);
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its history is read-only");
-  logActivity({ project_id: b.project_id, project_task_id: b.project_task_id, user_id: b.user_id, kind: "note", category_id: b.category_id, note: b.note.trim() });
-  return ok({ ok: true }, 201);
+
+  if (isActivity) {
+    if (!b.activity_type_id) return err(400, "Pick an activity type (call, visit, meeting…)");
+    if (!b.activity_date) return err(400, "Activity date is required");
+    const timeRe = /^\d{2}:\d{2}$/;
+    for (const [label, v] of [["Start time", b.start_time], ["End time", b.end_time]] as const)
+      if (v && !timeRe.test(v)) return err(400, `${label} must be HH:MM`);
+    if (b.start_time && b.end_time && b.start_time >= b.end_time) return err(400, "End time must be after start time");
+  }
+  const linkIds: number[] = Array.isArray(b.task_ids) ? b.task_ids.map(Number).filter(Boolean) : [];
+  for (const tid of linkIds) {
+    const t = db.project_tasks.find((x) => x.id === tid);
+    if (!t) return err(400, `Linked task ${tid} not found`);
+    if (t.project_id !== Number(b.project_id)) return err(400, "Linked tasks must belong to the same project");
+  }
+
+  const a = logActivity({
+    project_id: b.project_id,
+    project_task_id: b.project_task_id,
+    user_id: b.user_id,
+    kind: isActivity ? "activity" : "note",
+    category_id: isActivity ? null : b.category_id,
+    activity_type_id: isActivity ? b.activity_type_id : null,
+    activity_date: isActivity ? `${b.activity_date} ${b.start_time ?? "00:00"}:00` : undefined,
+    start_time: isActivity ? b.start_time ?? null : null,
+    end_time: isActivity ? b.end_time ?? null : null,
+    note: b.note.trim(),
+  });
+  for (const tid of linkIds) db.task_activity_links.push({ id: nextId(), project_task_id: tid, activity_id: a.id });
+  return ok(serializeActivity(a), 201);
 });
 
-// ---- dashboard ----
+// ---- wins (v2 §3) ----
+route("GET", "/api/wins", (_m, q) => {
+  let out = db.wins.slice();
+  if (q.get("project_id")) out = out.filter((w) => w.project_id === Number(q.get("project_id")));
+  if (q.get("category_id")) out = out.filter((w) => w.category_id === Number(q.get("category_id")));
+  if (q.get("start")) out = out.filter((w) => w.occurred_date >= q.get("start")!);
+  if (q.get("end")) out = out.filter((w) => w.occurred_date <= q.get("end")!);
+  out.sort((a, b) => (a.occurred_date < b.occurred_date ? 1 : a.occurred_date > b.occurred_date ? -1 : b.id - a.id));
+  return ok(out.map(serializeWin));
+});
+route("POST", "/api/wins", (_m, _q, b) => {
+  if (!b.project_id || !b.description?.trim()) return err(400, "Project and description are required");
+  const p = db.projects.find((x) => x.id === b.project_id);
+  if (!p) return err(404, "Project not found");
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only — wins are logged while the project is open");
+  const occurred = b.occurred_date || today();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred)) return err(400, "Occurred date must be YYYY-MM-DD");
+  const w: Row = {
+    id: nextId(), project_id: b.project_id, description: b.description.trim(),
+    category_id: b.category_id ?? null, occurred_date: occurred, logged_date: now(), logged_by: b.user_id ?? null,
+  };
+  db.wins.push(w);
+  logActivity({ project_id: b.project_id, user_id: b.user_id, kind: "system", note: `logged a win: "${w.description}"` });
+  return ok(serializeWin(w), 201);
+});
+route("DELETE", "/api/wins/:id", (m) => {
+  const w = db.wins.find((x) => x.id === Number(m.id));
+  if (!w) return err(404, "Win not found");
+  const p = db.projects.find((x) => x.id === w.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
+  db.wins = db.wins.filter((x) => x.id !== w.id);
+  return ok({ ok: true });
+});
+
+// ---- dashboard (v2 §2) ----
+function isoOfDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return isoOfDate(d);
+}
+
 route("GET", "/api/dashboard", (_m, q) => {
   const userId = q.get("user_id") ? Number(q.get("user_id")) : null;
   const all = db.projects.map((p) => serializeProject(p));
@@ -629,9 +808,12 @@ route("GET", "/api/dashboard", (_m, q) => {
   for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
 
   const done = doneStatusIds();
-  const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
+  const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
+  const blockedId = blockedVal?.id;
   const closedIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const t = today();
+  const yesterday = addDaysIso(t, -1);
+  const weekAgo = addDaysIso(t, -7);
   const openTasks = db.project_tasks
     .filter((x) => !x.conditional_pending && !done.includes(x.status_id))
     .filter((x) => {
@@ -651,20 +833,83 @@ route("GET", "/api/dashboard", (_m, q) => {
         .sort((a, b) => ((a.due_date ?? "9999") < (b.due_date ?? "9999") ? -1 : 1)).slice(0, 10)
     : [];
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 30);
-  const recentWins = all
-    .filter((p) => p.is_closed && p.status_key === "closed" && p.closed_date && p.closed_date >= cutoff.toISOString().slice(0, 10))
-    .sort((a, b) => (a.closed_date! > b.closed_date! ? -1 : 1)).slice(0, 6);
+  // Trend indicators
+  const createdThisWeek = active.filter((p) => p.created_date && p.created_date.slice(0, 10) >= weekAgo).length;
+  const newlyOverdue = openTasks.filter((x) => x.due_date === yesterday).length;
+  const closedThisWeek = all.filter((p) => p.is_closed && p.closed_date && p.closed_date.slice(0, 10) >= weekAgo).length;
+  const blockedThisWeek = blockedVal
+    ? db.activities.filter((a) => a.kind === "status_change" && a.new_status === blockedVal.label && a.activity_date >= weekAgo).length
+    : 0;
+  const trends = {
+    active: createdThisWeek ? `+${createdThisWeek} this week` : "No change this week",
+    overdue: newlyOverdue ? `+${newlyOverdue} since yesterday` : "No change since yesterday",
+    blocked: blockedThisWeek ? `+${blockedThisWeek} this week` : "No change this week",
+    closed: closedThisWeek ? `+${closedThisWeek} this week` : "No change this week",
+  };
+
+  // "This Week": tasks due + activities, Monday–Sunday
+  const nowDate = new Date();
+  const monday = new Date(nowDate);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const wkStart = isoOfDate(monday);
+  const wkEnd = addDaysIso(wkStart, 6);
+  const nowStamp = nowDate.toISOString().slice(0, 16).replace("T", " ");
+
+  const weekTasks = db.project_tasks.filter((x) => {
+    if (x.conditional_pending || !x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
+    const p = db.projects.find((pp) => pp.id === x.project_id);
+    return p && !closedIds.includes(p.status_id);
+  });
+  const weekActivities = db.activities.filter(
+    (a) => a.kind === "activity" && a.activity_date >= wkStart + " 00:00:00" && a.activity_date <= wkEnd + " 23:59:59"
+  );
+  const thisWeek = [
+    ...weekTasks.map((x) => {
+      const p = db.projects.find((pp) => pp.id === x.project_id)!;
+      return {
+        kind: "task", id: x.id, project_id: x.project_id, name: x.name, date: x.due_date,
+        time: null as string | null, type_key: "task", type_label: "Task due",
+        mcp_name: p.mcp_name, done: done.includes(x.status_id),
+      };
+    }),
+    ...weekActivities.map((a) => {
+      const p = db.projects.find((pp) => pp.id === a.project_id)!;
+      const type = valueById(a.activity_type_id);
+      return {
+        kind: "activity", id: a.id, project_id: a.project_id,
+        name: a.note?.length > 60 ? a.note.slice(0, 57) + "…" : a.note || type?.label || "Activity",
+        date: a.activity_date.slice(0, 10), time: a.start_time ?? null,
+        type_key: type?.maps_to ?? "other", type_label: type?.label ?? "Activity",
+        mcp_name: p.mcp_name, done: a.activity_date <= nowStamp,
+      };
+    }),
+  ].sort((a, b) => (a.date + (a.time ?? "99:99")).localeCompare(b.date + (b.time ?? "99:99")));
+
+  const recentActivity = db.activities
+    .slice()
+    .sort((a, b) => (a.activity_date < b.activity_date ? 1 : a.activity_date > b.activity_date ? -1 : b.id - a.id))
+    .slice(0, 15)
+    .map(serializeActivity);
+
+  const recentWins = db.wins
+    .filter((w) => w.occurred_date >= addDaysIso(t, -30))
+    .sort((a, b) => (a.occurred_date < b.occurred_date ? 1 : a.occurred_date > b.occurred_date ? -1 : b.id - a.id))
+    .slice(0, 6)
+    .map(serializeWin);
 
   const pick = (x: any) => ({ id: x.id, project_id: x.project_id, name: x.name, due_date: x.due_date, project_code: x.project_code, mcp_name: x.mcp_name });
   return ok({
     active_count: active.length,
     closed_count: all.length - active.length,
+    closed_this_week: closedThisWeek,
+    trends,
     rag_breakdown: ragBreakdown,
     overdue_tasks: overdue.map(pick),
     blocked_tasks: blocked.map(pick),
     my_open_tasks: myOpen.map(pick),
+    week_start: wkStart,
+    this_week: thisWeek,
+    recent_activity: recentActivity,
     recent_wins: recentWins,
     attention: active.filter((p) => p.rag === "red").slice(0, 8),
   });
@@ -818,10 +1063,25 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     };
   }
   if (u.pathname === "/api/export/wins.csv") {
+    // Portfolio-wide structured wins (v2 §3), filterable by occurred-date range
+    let rows = db.wins.slice();
+    if (q.get("start")) rows = rows.filter((w) => w.occurred_date >= q.get("start")!);
+    if (q.get("end")) rows = rows.filter((w) => w.occurred_date <= q.get("end")!);
+    rows.sort((a, b) => (a.occurred_date < b.occurred_date ? 1 : -1));
+    const out = rows.map(serializeWin);
+    return {
+      filename: "wins-report.csv",
+      csv: toCsv(
+        ["Occurred", "Logged", "Project ID", "MCP #", "MCP Name", "Category", "Win", "Logged By"],
+        out.map((w) => [w.occurred_date, w.logged_date?.slice(0, 10) ?? "", w.project_code, w.mcp_number, w.mcp_name, w.category_label ?? "", w.description, w.logged_by_name ?? ""])
+      ),
+    };
+  }
+  if (u.pathname === "/api/export/closures.csv") {
     const closedIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
     const rows = db.projects.filter((p) => closedIds.includes(p.status_id)).map((p) => serializeProject(p));
     return {
-      filename: "wins-report.csv",
+      filename: "closure-report.csv",
       csv: toCsv(
         ["Project ID", "MCP #", "MCP Name", "Assignee", "Assigned", "Closed", "Closed By", "Close Reason", "Final Summary"],
         rows.map((p) => [p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, p.assignment_date, p.closed_date ?? "", p.closed_by_name ?? "", p.close_reason_label ?? "", p.final_summary ?? ""])

@@ -8,6 +8,7 @@ import { dashboard } from "./routes/dashboard.js";
 import { importexport } from "./routes/importexport.js";
 import { projects, tasks } from "./routes/projects.js";
 import { activities, timelogs } from "./routes/timelogs.js";
+import { wins } from "./routes/wins.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -16,6 +17,7 @@ app.use("/api/projects", projects);
 app.use("/api/tasks", tasks);
 app.use("/api/timelogs", timelogs);
 app.use("/api/activities", activities);
+app.use("/api/wins", wins);
 app.use("/api/dashboard", dashboard);
 app.use("/api", importexport);
 app.use("/api", config);
