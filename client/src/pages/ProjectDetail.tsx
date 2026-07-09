@@ -1,13 +1,17 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, ApiError, fmtDate, fmtHours, Project, Task, todayIso } from "../api";
+import { Activity, api, ApiError, fmtDate, fmtHours, fmtTime, Project, Task, todayIso, Win } from "../api";
+import { ActivityDrawer } from "../components/ActivityDrawer";
 import { renderProjectField, renderTaskField, useLayout } from "../components/fields";
+import { ActivityTypeIcon, TrophyIcon } from "../components/icons";
 import { Page } from "../components/Layout";
 import { TaskKanban } from "../components/TaskKanban";
-import { Btn, Card, Chip, EmptyState, Field, inputCls, Modal, Mono, RagChip, Skeleton } from "../components/ui";
+import { TaskModal } from "../components/TaskModal";
+import { Btn, Card, Chip, CsvLink, EmptyState, Field, inputCls, Modal, Mono, RagChip, Skeleton, tint } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
-type Tab = "tasks" | "time" | "notes" | "history";
+type Tab = "tasks" | "wins" | "time" | "notes" | "history";
+const TABS: Tab[] = ["tasks", "wins", "time", "notes", "history"];
 
 export function ProjectDetail() {
   const { id } = useParams();
@@ -24,6 +28,9 @@ export function ProjectDetail() {
   const [showRag, setShowRag] = useState(false);
   const [skipTask, setSkipTask] = useState<{ task: Task; statusId: number } | null>(null);
   const [decisionTask, setDecisionTask] = useState<{ task: Task; statusId: number } | null>(null);
+  const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  const [highlightActivity, setHighlightActivity] = useState<number | null>(null);
   const headerFields = useLayout("project_header");
   const taskColumns = useLayout("task_list");
 
@@ -31,7 +38,22 @@ export function ProjectDetail() {
   useEffect(load, [load]);
   useEffect(() => {
     if (params.get("close")) { setShowClose(true); setParams({}, { replace: true }); }
+    const t = params.get("tab");
+    if (t && TABS.includes(t as Tab)) {
+      setTab(t as Tab);
+      const act = params.get("activity");
+      if (act) setHighlightActivity(Number(act));
+      setParams({}, { replace: true });
+    }
   }, [params, setParams]);
+
+  // Keep the open task modal in sync after edits reload the project
+  useEffect(() => {
+    if (detailTask && project?.tasks) {
+      const fresh = (project.tasks as Task[]).find((t) => t.id === detailTask.id);
+      if (fresh && fresh !== detailTask) setDetailTask(fresh);
+    }
+  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Shared task status change — same rules from list, kanban, or dropdown (§4.2). */
   async function changeTaskStatus(task: Task, statusId: number, extra?: { skip_reason?: string; decision?: "yes" | "no" }) {
@@ -110,10 +132,10 @@ export function ProjectDetail() {
 
       {/* Tabs */}
       <div className="mb-4 flex items-center gap-1 border-b border-hairline" role="tablist">
-        {(["tasks", "time", "notes", "history"] as Tab[]).map((t) => (
+        {TABS.map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
             className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium capitalize transition-colors ${tab === t ? "border-primary text-primary" : "border-transparent text-muted hover:text-ink"}`}>
-            {t === "notes" ? "Notes / Activity" : t}
+            {t === "notes" ? "Notes & Activity" : t}
           </button>
         ))}
         {tab === "tasks" && (
@@ -137,7 +159,27 @@ export function ProjectDetail() {
             <tbody>
               {tasks.map((t, i) => (
                 <tr key={t.id} className={`border-b border-hairline last:border-0 ${i % 2 ? "bg-rowalt" : ""}`}>
-                  {taskColumns.map((c) => <td key={c.field_key} className="px-3 py-2">{renderTaskField(c.field_key, t)}</td>)}
+                  {taskColumns.map((c) => (
+                    <td key={c.field_key} className="px-3 py-2">
+                      {c.field_key === "name" ? (
+                        <button className="text-left hover:underline" onClick={() => setDetailTask(t)}
+                          aria-label={`Open ${t.name}`}>
+                          {renderTaskField("name", t)}
+                          {t.latest_note && <span className="mt-0.5 block max-w-sm truncate text-[11px] font-normal text-muted">{t.latest_note.note}</span>}
+                        </button>
+                      ) : c.field_key === "activity_count" && t.activity_count ? (
+                        <button
+                          onClick={() => setDrawerTask(t)}
+                          aria-label={`${t.activity_count} linked activities for ${t.name}`}
+                          className="rounded-full bg-accent-soft px-2.5 py-0.5 font-mono text-xs font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
+                        >
+                          {t.activity_count}
+                        </button>
+                      ) : (
+                        renderTaskField(c.field_key, t)
+                      )}
+                    </td>
+                  ))}
                   {!readOnly && (
                     <td className="px-3 py-2">
                       <select
@@ -162,10 +204,19 @@ export function ProjectDetail() {
         <TaskKanban tasks={tasks} readOnly={readOnly} onMove={changeTaskStatus} />
       )}
 
+      {tab === "wins" && <WinsTab project={project} readOnly={readOnly} />}
       {tab === "time" && <TimeTab project={project} readOnly={readOnly} />}
-      {tab === "notes" && <NotesTab project={project} readOnly={readOnly} kind="note" />}
-      {tab === "history" && <NotesTab project={project} readOnly={readOnly} kind="all" />}
+      {tab === "notes" && (
+        <NotesTab project={project} readOnly={readOnly} kind="note"
+          highlightId={highlightActivity} onHighlighted={() => setHighlightActivity(null)} onChanged={load} />
+      )}
+      {tab === "history" && <NotesTab project={project} readOnly={readOnly} kind="all" onChanged={load} />}
 
+      {detailTask && (
+        <TaskModal task={detailTask} project={project} readOnly={readOnly}
+          onClose={() => setDetailTask(null)} onChanged={load} />
+      )}
+      {drawerTask && <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} onClose={() => setDrawerTask(null)} />}
       {showClose && <CloseModal project={project} onClose={() => setShowClose(false)} onClosed={load} />}
       {showAddTask && <AddTaskModal project={project} users={users} onClose={() => setShowAddTask(false)} onAdded={load} />}
       {showRag && <RagModal project={project} onClose={() => setShowRag(false)} onSaved={load} />}
@@ -294,7 +345,7 @@ function AddTaskModal({ project, users, onClose, onAdded }: { project: Project; 
   const { activeValues } = useConfig();
   const { currentUser } = useSession();
   const toast = useToast();
-  const [form, setForm] = useState({ name: "", description: "", due_date: "", assigned_to: "", priority_id: "", required: false });
+  const [form, setForm] = useState({ name: "", description: "", due_date: "", assigned_to: "", priority_id: "", required: false, initial_note: "" });
   const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
@@ -336,6 +387,9 @@ function AddTaskModal({ project, users, onClose, onAdded }: { project: Project; 
             Required for closure
           </label>
         </div>
+        <Field label="Initial note (optional)" hint="Starts the task's note history — no separate step needed.">
+          <input className={inputCls} value={form.initial_note} onChange={(e) => setForm({ ...form, initial_note: e.target.value })} placeholder="Context for whoever picks this up" />
+        </Field>
         {error && <p className="text-sm text-rag-red">{error}</p>}
         <div className="flex justify-end gap-2"><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" type="submit">Add task</Btn></div>
       </form>
@@ -509,29 +563,57 @@ function TimeTab({ project, readOnly }: { project: Project; readOnly: boolean })
   );
 }
 
-// ---------- Notes / Activity + History tabs ----------
+// ---------- Notes & Activity + History tabs (expanded per v2 §5) ----------
 
-function NotesTab({ project, readOnly, kind }: { project: Project; readOnly: boolean; kind: "note" | "all" }) {
+type RecordFilter = "all" | "notes" | "activities";
+
+function NotesTab({ project, readOnly, kind, highlightId, onHighlighted, onChanged }: {
+  project: Project;
+  readOnly: boolean;
+  kind: "note" | "all";
+  highlightId?: number | null;
+  onHighlighted?: () => void;
+  onChanged?: () => void;
+}) {
   const { activeValues } = useConfig();
   const { currentUser } = useSession();
   const toast = useToast();
-  const [items, setItems] = useState<any[] | null>(null);
+  const [items, setItems] = useState<Activity[] | null>(null);
+  const [filter, setFilter] = useState<RecordFilter>("all");
   const [note, setNote] = useState("");
   const [catId, setCatId] = useState<number>(activeValues("Note Category").find((v) => v.is_default)?.id ?? 0);
+  const [showLog, setShowLog] = useState(false);
+  const highlightRef = useRef<HTMLLIElement | null>(null);
 
+  const kindParam = kind === "all" ? "" : filter === "notes" ? "&kind=note" : filter === "activities" ? "&kind=activity" : "&kind=note,activity";
   const load = useCallback(() => {
-    api.get(`/api/activities?project_id=${project.id}${kind === "note" ? "&kind=note" : ""}`).then(setItems);
-  }, [project.id, kind]);
+    api.get<Activity[]>(`/api/activities?project_id=${project.id}${kindParam}`).then(setItems);
+  }, [project.id, kindParam]);
   useEffect(load, [load]);
+
+  useEffect(() => {
+    if (highlightId && items && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ block: "center" });
+      const t = setTimeout(() => onHighlighted?.(), 2500);
+      return () => clearTimeout(t);
+    }
+  }, [highlightId, items, onHighlighted]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     try {
       await api.post("/api/activities", { project_id: project.id, user_id: currentUser?.id, category_id: catId || null, note });
-      setNote(""); load();
+      setNote(""); load(); onChanged?.();
       toast("Note added.", "success");
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
   }
+
+  const filterBtn = (f: RecordFilter, label: string) => (
+    <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f}
+      className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${filter === f ? "bg-primary-soft text-primary" : "text-muted hover:text-ink"}`}>
+      {label}
+    </button>
+  );
 
   return (
     <div className="space-y-4">
@@ -547,32 +629,267 @@ function NotesTab({ project, readOnly, kind }: { project: Project; readOnly: boo
               </select>
             </Field>
             <Btn kind="primary" type="submit" disabled={!note.trim()}>Add note</Btn>
+            <Btn onClick={() => setShowLog(true)}>Log activity…</Btn>
           </form>
         </Card>
       )}
       {readOnly && kind === "note" && <p className="text-xs text-muted">Historical notes are read-only once a project is closed (§4.6).</p>}
+      {kind === "note" && (
+        <div className="flex items-center rounded-lg border border-hairline bg-surface p-0.5 w-fit" role="group" aria-label="Record type filter">
+          {filterBtn("all", "All records")}
+          {filterBtn("notes", "Notes only")}
+          {filterBtn("activities", "Activities only")}
+        </div>
+      )}
       <Card>
         <ul className="divide-y divide-hairline">
           {(items ?? []).map((a) => (
-            <li key={a.id} className="flex items-start gap-3 px-4 py-3">
-              <span className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-canvas font-mono text-[11px] font-semibold text-muted">
-                {a.user_name.split(" ").map((s: string) => s[0]).join("").slice(0, 2)}
-              </span>
+            <li key={a.id} ref={a.id === highlightId ? highlightRef : undefined}
+              className={`flex items-start gap-3 px-4 py-3 transition-colors ${a.id === highlightId ? "bg-accent-soft" : ""}`}>
+              {a.kind === "activity" ? (
+                <span className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full"
+                  style={{ backgroundColor: tint(a.activity_type_color ?? "#5C6B84", 0.15), color: a.activity_type_color ?? "#5C6B84" }}>
+                  <ActivityTypeIcon typeKey={a.activity_type_key} />
+                </span>
+              ) : (
+                <span className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-canvas font-mono text-[11px] font-semibold text-muted">
+                  {a.user_name.split(" ").map((s: string) => s[0]).join("").slice(0, 2)}
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
                   <span className="font-medium text-ink">{a.user_name}</span>
                   <Mono>{a.activity_date?.slice(0, 16).replace("T", " ")}</Mono>
-                  {a.category_label && <Chip label={a.category_label} color={a.category_color} small />}
+                  {a.kind === "activity" && a.activity_type_label && <Chip label={a.activity_type_label} color={a.activity_type_color!} small />}
+                  {a.kind === "activity" && a.start_time && (
+                    <span>
+                      <Mono>{fmtTime(a.start_time)}{a.end_time ? ` – ${fmtTime(a.end_time)}` : ""}</Mono>
+                      {a.duration_minutes != null && <> · {fmtHours(a.duration_minutes)}</>}
+                    </span>
+                  )}
+                  {a.category_label && <Chip label={a.category_label} color={a.category_color!} small />}
                   {a.kind === "status_change" && <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide">status</span>}
                   {a.task_name && <span>· {a.task_name}</span>}
                 </div>
                 <p className="mt-0.5 text-sm">{a.note}</p>
+                {a.linked_tasks.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+                    <span>Linked tasks:</span>
+                    {a.linked_tasks.map((t) => (
+                      <span key={t.id} className="rounded bg-canvas px-1.5 py-px">{t.name}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             </li>
           ))}
           {items?.length === 0 && <li className="px-4 py-8 text-center text-sm text-muted">Nothing here yet.</li>}
         </ul>
       </Card>
+      {showLog && (
+        <LogActivityModal project={project} onClose={() => setShowLog(false)}
+          onLogged={() => { load(); onChanged?.(); }} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Log a customer interaction (v2 §5): type, date, start/end time, notes —
+ * linkable to any number of the project's tasks in the same action.
+ */
+function LogActivityModal({ project, onClose, onLogged }: { project: Project; onClose: () => void; onLogged: () => void }) {
+  const { activeValues } = useConfig();
+  const { currentUser } = useSession();
+  const toast = useToast();
+  const types = activeValues("Activity Type");
+  const [form, setForm] = useState({
+    activity_type_id: types.find((v) => v.is_default)?.id ?? types[0]?.id ?? 0,
+    activity_date: todayIso(),
+    start_time: "",
+    end_time: "",
+    note: "",
+  });
+  const [taskIds, setTaskIds] = useState<number[]>([]);
+  const [error, setError] = useState("");
+
+  function toggleTask(id: number) {
+    setTaskIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    try {
+      await api.post("/api/activities", {
+        project_id: project.id,
+        user_id: currentUser?.id,
+        kind: "activity",
+        activity_type_id: Number(form.activity_type_id),
+        activity_date: form.activity_date,
+        start_time: form.start_time || null,
+        end_time: form.end_time || null,
+        note: form.note,
+        task_ids: taskIds,
+      });
+      toast("Activity logged.", "success");
+      onLogged(); onClose();
+    } catch (err) { setError(err instanceof Error ? err.message : "Failed to log activity"); }
+  }
+
+  return (
+    <Modal title="Log activity" onClose={onClose} wide>
+      <form onSubmit={submit} className="grid grid-cols-2 gap-4">
+        <Field label="Activity type">
+          <select className={inputCls} value={form.activity_type_id} onChange={(e) => setForm({ ...form, activity_type_id: Number(e.target.value) })}>
+            {types.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Date">
+          <input type="date" className={inputCls} required value={form.activity_date} onChange={(e) => setForm({ ...form, activity_date: e.target.value })} />
+        </Field>
+        <Field label="Start time">
+          <input type="time" className={inputCls} value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
+        </Field>
+        <Field label="End time">
+          <input type="time" className={inputCls} value={form.end_time} onChange={(e) => setForm({ ...form, end_time: e.target.value })} />
+        </Field>
+        <div className="col-span-2">
+          <Field label="Notes / comments">
+            <textarea className={inputCls + " h-20"} required value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })}
+              placeholder="What was discussed or done?" />
+          </Field>
+        </div>
+        <div className="col-span-2">
+          <Field label={`Link to tasks (${taskIds.length} selected)`} hint="One activity can link to any number of tasks; tasks can hold many activities.">
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-hairline p-2">
+              {(project.tasks ?? []).map((t) => (
+                <label key={t.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-canvas">
+                  <input type="checkbox" checked={taskIds.includes(t.id)} onChange={() => toggleTask(t.id)} />
+                  <span className="truncate">{t.name}</span>
+                  <span className="ml-auto text-[11px] text-muted">{t.status_label}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        </div>
+        {error && <p className="col-span-2 text-sm text-rag-red">{error}</p>}
+        <div className="col-span-2 flex justify-end gap-2">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" type="submit" disabled={!form.note.trim()}>Log activity</Btn>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------- Wins tab (v2 §3) ----------
+
+/** Portfolio-wide wins export with an occurred-date range (v2 §3 acceptance). */
+export function WinsExportCard() {
+  const [range, setRange] = useState({ start: "", end: "" });
+  const qs = new URLSearchParams();
+  if (range.start) qs.set("start", range.start);
+  if (range.end) qs.set("end", range.end);
+  return (
+    <Card className="h-fit p-4">
+      <h3 className="mb-1 text-sm font-semibold">Portfolio wins report</h3>
+      <p className="mb-3 text-xs text-muted">One export covering wins across <b>all</b> projects — for reporting and leadership decks. Leave the dates empty for everything.</p>
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <Field label="From"><input type="date" className={inputCls} value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} /></Field>
+        <Field label="To"><input type="date" className={inputCls} value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} /></Field>
+      </div>
+      <CsvLink href={`/api/export/wins.csv${qs.toString() ? `?${qs}` : ""}`}>Export wins (CSV)</CsvLink>
+    </Card>
+  );
+}
+
+function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean }) {
+  const { activeValues } = useConfig();
+  const { currentUser } = useSession();
+  const toast = useToast();
+  const [wins, setWins] = useState<Win[] | null>(null);
+  const [form, setForm] = useState({ description: "", category_id: "", occurred_date: todayIso() });
+
+  const load = useCallback(() => { api.get<Win[]>(`/api/wins?project_id=${project.id}`).then(setWins); }, [project.id]);
+  useEffect(load, [load]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    try {
+      await api.post("/api/wins", {
+        project_id: project.id,
+        description: form.description,
+        category_id: form.category_id ? Number(form.category_id) : null,
+        occurred_date: form.occurred_date,
+        user_id: currentUser?.id,
+      });
+      toast("Win logged. 🎉", "success");
+      setForm({ ...form, description: "" });
+      load();
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed to log win", "error"); }
+  }
+
+  async function remove(w: Win) {
+    try {
+      await api.del(`/api/wins/${w.id}`);
+      toast("Win removed.", "info");
+      load();
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+      <div className="space-y-3">
+        {wins?.length === 0 && (
+          <EmptyState title="No wins logged yet" hint="Wins can be recorded at any point — not just at closure." />
+        )}
+        {(wins ?? []).map((w) => (
+          <Card key={w.id} className="flex items-start gap-3 p-4">
+            <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full"
+              style={{ backgroundColor: tint(w.category_color ?? "#4E9468", 0.15), color: w.category_color ?? "#4E9468" }}>
+              <TrophyIcon size={18} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium leading-snug">{w.description}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                {w.category_label && <Chip label={w.category_label} color={w.category_color!} small />}
+                <span>Occurred <Mono>{fmtDate(w.occurred_date)}</Mono></span>
+                <span>· Logged <Mono>{fmtDate(w.logged_date)}</Mono>{w.logged_by_name && <> by {w.logged_by_name}</>}</span>
+              </div>
+            </div>
+            {!readOnly && (
+              <button onClick={() => remove(w)} aria-label="Remove win" className="rounded p-1 text-muted hover:bg-canvas hover:text-rag-red">✕</button>
+            )}
+          </Card>
+        ))}
+      </div>
+      <div className="space-y-4">
+        {!readOnly && (
+          <Card className="h-fit p-4">
+            <h3 className="mb-3 text-sm font-semibold">Log a win</h3>
+            <form onSubmit={submit} className="space-y-3">
+              <Field label="What happened?">
+                <textarea className={inputCls + " h-20"} required value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  placeholder="e.g. Recovered $4,200 in misapplied charges" />
+              </Field>
+              <Field label="Category (optional)">
+                <select className={inputCls} value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })}>
+                  <option value="">—</option>
+                  {activeValues("Win Category").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+                </select>
+              </Field>
+              <Field label="When it happened">
+                <input type="date" className={inputCls} required value={form.occurred_date}
+                  onChange={(e) => setForm({ ...form, occurred_date: e.target.value })} />
+              </Field>
+              <Btn kind="primary" type="submit" disabled={!form.description.trim()}>Log win</Btn>
+            </form>
+          </Card>
+        )}
+        <WinsExportCard />
+      </div>
     </div>
   );
 }

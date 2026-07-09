@@ -475,6 +475,8 @@ const SAMPLE_TASK: Task = {
   status_id: 0, status_label: "In Progress", status_color: "#12808A", status_key: "in_progress",
   priority_id: 0, priority_label: "High", priority_color: "#C2554E", required: 1, is_decision: 0,
   notes: "", skip_reason: null, completed_date: null, completed_by_name: null,
+  activity_count: 2, note_count: 1,
+  latest_note: { note: "Waiting on the customer's usage export.", activity_date: "2026-07-08 14:00:00", user_name: "Morgan Hale" },
 };
 
 const VIEWS = [

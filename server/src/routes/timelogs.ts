@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { isClosedStatus, logActivity, valueById } from "../core.js";
+import { durationMinutes, isClosedStatus, logActivity, serializeActivity, valueById } from "../core.js";
 
 export const timelogs = Router();
 export const activities = Router();
@@ -69,41 +69,88 @@ timelogs.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- Notes / Activity (§4.6) ----------
+// ---------- Notes & Activity (§4.6, expanded per v2 §5) ----------
 
+/**
+ * Query params: project_id; kind (comma-separated, e.g. 'note' or 'note,activity');
+ * task_id (notes/records attached directly to that task); limit.
+ */
 activities.get("/", (req, res) => {
-  const { project_id, kind } = req.query as Record<string, string>;
+  const { project_id, kind, task_id, limit } = req.query as Record<string, string>;
   let sql = "SELECT * FROM activities WHERE 1=1";
   const params: any[] = [];
   if (project_id) { sql += " AND project_id = ?"; params.push(Number(project_id)); }
-  if (kind) { sql += " AND kind = ?"; params.push(kind); }
+  if (task_id) { sql += " AND project_task_id = ?"; params.push(Number(task_id)); }
+  if (kind) {
+    const kinds = kind.split(",").map((k) => k.trim()).filter(Boolean);
+    sql += ` AND kind IN (${kinds.map(() => "?").join(",")})`;
+    params.push(...kinds);
+  }
   sql += " ORDER BY activity_date DESC, id DESC";
-  const rows = db.prepare(sql).all(...params) as any[];
-  res.json(
-    rows.map((a) => {
-      const user = a.user_id ? (db.prepare("SELECT name FROM users WHERE id = ?").get(a.user_id) as any) : null;
-      const cat = valueById(a.category_id);
-      const task = a.project_task_id
-        ? (db.prepare("SELECT name FROM project_tasks WHERE id = ?").get(a.project_task_id) as any)
-        : null;
-      return {
-        ...a,
-        user_name: user?.name ?? "System",
-        category_label: cat?.label ?? null,
-        category_color: cat?.color ?? null,
-        task_name: task?.name ?? null,
-      };
-    })
-  );
+  if (limit && Number(limit) > 0) { sql += " LIMIT ?"; params.push(Number(limit)); }
+  res.json((db.prepare(sql).all(...params) as any[]).map(serializeActivity));
 });
 
+activities.get("/:id", (req, res) => {
+  const a = db.prepare("SELECT * FROM activities WHERE id = ?").get(req.params.id);
+  if (!a) return res.status(404).json({ error: "Activity not found" });
+  res.json(serializeActivity(a));
+});
+
+/**
+ * Create a note (kind='note', default) or a logged activity (kind='activity':
+ * phone call / site visit / meeting with date + start/end times). `task_ids`
+ * links an activity to any number of tasks in one action (many-to-many);
+ * `project_task_id` keeps the v1 behavior of attaching a note to one task.
+ */
 activities.post("/", (req, res) => {
-  const { project_id, project_task_id, user_id, category_id, note } = req.body;
+  const { project_id, project_task_id, user_id, category_id, note, kind,
+    activity_type_id, activity_date, start_time, end_time, task_ids } = req.body;
+  const isActivity = kind === "activity";
   if (!project_id || !note?.trim()) return res.status(400).json({ error: "Project and note text are required" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(project_id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   // Historical notes are read-only once closed (§4.6) — and no new ones can be added
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its history is read-only" });
-  logActivity({ project_id, project_task_id, user_id, kind: "note", category_id, note: note.trim() });
-  res.status(201).json({ ok: true });
+
+  if (isActivity) {
+    if (!activity_type_id) return res.status(400).json({ error: "Pick an activity type (call, visit, meeting…)" });
+    if (!activity_date) return res.status(400).json({ error: "Activity date is required" });
+    const timeRe = /^\d{2}:\d{2}$/;
+    for (const [label, v] of [["Start time", start_time], ["End time", end_time]] as const)
+      if (v && !timeRe.test(v)) return res.status(400).json({ error: `${label} must be HH:MM` });
+    const dur = durationMinutes(start_time ?? null, end_time ?? null);
+    if (start_time && end_time && dur === 0 && start_time >= end_time)
+      return res.status(400).json({ error: "End time must be after start time" });
+  }
+
+  const linkIds: number[] = Array.isArray(task_ids) ? task_ids.map(Number).filter(Boolean) : [];
+  for (const tid of linkIds) {
+    const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(tid) as any;
+    if (!t) return res.status(400).json({ error: `Linked task ${tid} not found` });
+    if (t.project_id !== Number(project_id)) return res.status(400).json({ error: "Linked tasks must belong to the same project" });
+  }
+
+  const create = db.transaction(() => {
+    const id = db.prepare(
+      `INSERT INTO activities (project_id, project_task_id, user_id, activity_date, kind, category_id, activity_type_id, start_time, end_time, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      project_id,
+      project_task_id ?? null,
+      user_id ?? null,
+      isActivity ? `${activity_date} ${start_time ?? "00:00"}:00` : new Date().toISOString().slice(0, 19).replace("T", " "),
+      isActivity ? "activity" : "note",
+      category_id ?? null,
+      isActivity ? activity_type_id : null,
+      isActivity ? start_time ?? null : null,
+      isActivity ? end_time ?? null : null,
+      note.trim()
+    ).lastInsertRowid as number;
+    const link = db.prepare("INSERT OR IGNORE INTO task_activity_links (project_task_id, activity_id) VALUES (?, ?)");
+    for (const tid of linkIds) link.run(tid, id);
+    return id;
+  });
+  const id = create();
+  res.status(201).json(serializeActivity(db.prepare("SELECT * FROM activities WHERE id = ?").get(id)));
 });

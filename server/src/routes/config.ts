@@ -66,7 +66,8 @@ function referenceCount(valueId: number): number {
     "SELECT COUNT(*) AS n FROM projects WHERE status_id = ? OR risk_level_id = ? OR close_reason_id = ?",
     "SELECT COUNT(*) AS n FROM project_tasks WHERE status_id = ? OR priority_id = ? OR priority_id = ?",
     "SELECT COUNT(*) AS n FROM time_logs WHERE activity_type_id = ? OR activity_type_id = ? OR activity_type_id = ?",
-    "SELECT COUNT(*) AS n FROM activities WHERE category_id = ? OR category_id = ? OR category_id = ?",
+    "SELECT COUNT(*) AS n FROM activities WHERE category_id = ? OR activity_type_id = ? OR category_id = ?",
+    "SELECT COUNT(*) AS n FROM wins WHERE category_id = ? OR category_id = ? OR category_id = ?",
     "SELECT COUNT(*) AS n FROM template_tasks WHERE default_priority_id = ? OR default_priority_id = ? OR default_priority_id = ?",
   ];
   return queries.reduce((sum, q) => sum + (db.prepare(q).get(valueId, valueId, valueId) as any).n, 0);

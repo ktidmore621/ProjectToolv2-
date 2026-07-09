@@ -18,13 +18,16 @@ export interface DemoDB {
   project_tasks: Row[];
   time_logs: Row[];
   activities: Row[];
+  task_activity_links: Row[];
+  wins: Row[];
   field_requirements: Row[];
   view_layout_fields: Row[];
   settings: Record<string, string>;
   seq: number;
 }
 
-const STORE_KEY = "cat_demo_db_v1";
+// v2 bump: adds wins + task_activity_links; older stored v1 data reseeds fresh
+const STORE_KEY = "cat_demo_db_v2";
 
 export let db: DemoDB = emptyDb();
 {
@@ -68,7 +71,7 @@ function load(): DemoDB | null {
 function emptyDb(): DemoDB {
   return {
     users: [], picklists: [], picklist_values: [], workflow_templates: [], template_tasks: [],
-    projects: [], project_tasks: [], time_logs: [], activities: [],
+    projects: [], project_tasks: [], time_logs: [], activities: [], task_activity_links: [], wins: [],
     field_requirements: [], view_layout_fields: [], settings: {}, seq: 0,
   };
 }
@@ -94,8 +97,9 @@ export function logActivity(opts: {
   project_id: number; project_task_id?: number | null; user_id?: number | null;
   kind?: string; category_id?: number | null; note?: string;
   old_status?: string | null; new_status?: string | null; activity_date?: string;
-}) {
-  db.activities.push({
+  activity_type_id?: number | null; start_time?: string | null; end_time?: string | null;
+}): Row {
+  const row: Row = {
     id: nextId(),
     project_id: opts.project_id,
     project_task_id: opts.project_task_id ?? null,
@@ -103,10 +107,15 @@ export function logActivity(opts: {
     activity_date: opts.activity_date ?? now(),
     kind: opts.kind ?? "note",
     category_id: opts.category_id ?? null,
+    activity_type_id: opts.activity_type_id ?? null,
+    start_time: opts.start_time ?? null,
+    end_time: opts.end_time ?? null,
     note: opts.note ?? "",
     old_status: opts.old_status ?? null,
     new_status: opts.new_status ?? null,
-  });
+  };
+  db.activities.push(row);
+  return row;
 }
 
 function addDays(iso: string, days: number): string {
@@ -201,6 +210,14 @@ function freshDb(): void {
     ["Risk", "#C2554E", "risk"], ["Issue", "#B0632F", "issue"], ["Action Plan", "#C99239", "action_plan"],
     ["Resolution", "#4E9468", "resolution"],
   ]);
+  makeList("Activity Type", "activity", 0, [
+    ["Phone Call", "#12808A", "phone_call", 1], ["Site Visit", "#2E4E8F", "site_visit"],
+    ["Client Meeting", "#8A6FB8", "client_meeting"], ["Other Customer Interaction", "#5C6B84", "other"],
+  ]);
+  makeList("Win Category", "win", 0, [
+    ["Cost Savings", "#4E9468", "cost_savings", 1], ["Process Improvement", "#12808A", "process_improvement"],
+    ["Relationship Recovery", "#8A6FB8", "relationship_recovery"], ["Escalation Resolved", "#C99239", "escalation_resolved"],
+  ]);
   makeList("Time Log Activity Type", "time_log", 0, [
     ["Billing Analysis", "#2E4E8F", "billing_analysis", 1], ["Customer Visit", "#12808A", "customer_visit"],
     ["Internal Review", "#8A6FB8", "internal_review"], ["Action Plan Work", "#C99239", "action_plan"],
@@ -278,7 +295,8 @@ function freshDb(): void {
     task_list: [
       ["step_order", "#", 1, 1], ["name", "Task Name", 1, 1], ["status_label", "Status", 1, 1],
       ["assigned_to_name", "Assigned To", 1, 0], ["due_date", "Due Date", 1, 0],
-      ["priority_label", "Priority", 1, 0], ["required", "Required", 1, 0], ["task_type", "Type", 0, 0],
+      ["priority_label", "Priority", 1, 0], ["required", "Required", 1, 0],
+      ["activity_count", "Activities", 1, 0], ["task_type", "Type", 0, 0],
     ],
     project_header: [
       ["mcp_name", "MCP Name", 1, 1], ["mcp_number", "MCP #", 1, 1], ["project_code", "Project ID", 1, 1],
@@ -310,16 +328,23 @@ function seedDemoProjects(users: number[], tplId: number) {
     mcp: [string, string]; assignee: number; assignedDaysAgo: number; status: string; risk: string;
     closed?: { daysAgo: number; reason: string; summary: string };
     completeThrough?: number; blockTask?: number;
+    wins?: [string, string, number][];
   };
   const demos: Demo[] = [
-    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3 },
-    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2 },
+    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
+      wins: [["Recovered $4,200 in misapplied charges found during the billing history review.", "cost_savings", 6]] },
+    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
+      wins: [["Customer agreed to a monthly reconciliation cadence going forward.", "process_improvement", 4]] },
     { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
-    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5 },
+    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
+      wins: [["De-escalated the pending complaint; customer re-engaged with the action plan.", "escalation_resolved", 10]] },
     { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], assignedDaysAgo: 3, status: "new", risk: "low" },
-    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8 },
-    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." } },
-    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." } },
+    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
+      wins: [["Corrected rate class saves the co-op roughly $700/month going forward.", "cost_savings", 8]] },
+    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
+      wins: [["Rebuilt trust with the fleet manager after the disputed invoices were credited.", "relationship_recovery", 20], ["Meter remapping cut disputed line items by 12%.", "cost_savings", 16]] },
+    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
+      wins: [["Consolidated duplicate accounts into a single clean billing record.", "process_improvement", 35]] },
   ];
 
   let n = 0;
@@ -385,6 +410,43 @@ function seedDemoProjects(users: number[], tplId: number) {
     ];
     for (const [cat, note] of noteSamples) {
       logActivity({ project_id: pid, user_id: d.assignee, kind: "note", category_id: noteCat(cat), note });
+    }
+
+    // v2: logged activities with times, many-to-many linked to tasks
+    const actTypeId = (key: string) => valueByMapsTo("Activity Type", key)!.id;
+    const link = (taskIdx: number, activityId: number) => {
+      const t = allTasks[taskIdx];
+      if (t) db.task_activity_links.push({ id: nextId(), project_task_id: t.id, activity_id: activityId });
+    };
+    const completeN2 = d.completeThrough ?? 0;
+    if (!isClosed && completeN2 > 0) {
+      const visit = logActivity({
+        project_id: pid, user_id: d.assignee, kind: "activity", activity_type_id: actTypeId("site_visit"),
+        activity_date: iso(3) + " 10:00:00", start_time: "10:00", end_time: "11:30",
+        note: `On-site visit at ${d.mcp[1]} — walked the metering setup with facilities.`,
+      });
+      link(2, visit.id); link(3, visit.id);
+      const call = logActivity({
+        project_id: pid, user_id: d.assignee, kind: "activity", activity_type_id: actTypeId("phone_call"),
+        activity_date: iso(0) + " 09:30:00", start_time: "09:30", end_time: "10:00",
+        note: "Check-in call on outstanding billing questions.",
+      });
+      link(1, call.id);
+      const meeting = logActivity({
+        project_id: pid, user_id: d.assignee, kind: "activity", activity_type_id: actTypeId("client_meeting"),
+        activity_date: iso(-(1 + (n % 3))) + " 14:00:00", start_time: "14:00", end_time: "15:00",
+        note: "Review findings and agree next steps with the customer.",
+      });
+      link(4, meeting.id);
+    }
+
+    // v2: structured wins
+    const winCatId = (key: string) => valueByMapsTo("Win Category", key)!.id;
+    for (const [descr, catKey, daysAgo] of d.wins ?? []) {
+      db.wins.push({
+        id: nextId(), project_id: pid, description: descr, category_id: winCatId(catKey),
+        occurred_date: iso(daysAgo), logged_date: iso(Math.max(0, daysAgo - 1)) + " 09:00:00", logged_by: d.assignee,
+      });
     }
 
     const addLog = (project_task_id: number | null, date: string, hours: number, minutes: number, act: string, notes: string) =>

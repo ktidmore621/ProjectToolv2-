@@ -27,6 +27,7 @@ export function History() {
         <>
           <input className={inputCls + " !w-56"} placeholder="Search closed projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search closed projects" />
           <CsvLink href="/api/export/wins.csv">Wins report (CSV)</CsvLink>
+          <CsvLink href="/api/export/closures.csv">Closure report (CSV)</CsvLink>
         </>
       }
     >

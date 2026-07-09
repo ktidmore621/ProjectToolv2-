@@ -57,6 +57,16 @@ npm start            # Express serves API + built client on :3001
 - **§9 Screens** — Dashboard, Portfolio Kanban, Project List, Project Detail (Tasks list/Kanban toggle, Time, Notes/Activity, History tabs), My/Team Timecard, History archive, Configuration.
 - **§10 Design system** — token-driven theme (desaturated RAG palette, IBM Plex Sans/Mono), RAG as consistent visual language, skeleton loading, plain-language toasts, keyboard-visible focus, color always paired with labels, `prefers-reduced-motion` respected.
 
+## v2 enhancements (per the v2 delta spec)
+
+- **§1 Navigation** — the standalone Kanban nav item merged into **Projects**: one screen with a List / Kanban / Task List view toggle (persists per session). The new cross-project **Task List View** filters (Overdue, Blocked, Assigned To, Project, Status) combine and live in the URL, so every dashboard KPI deep-links into a pre-filtered view.
+- **§2 Dashboard redesign** — time-of-day greeting, KPI cards with icon badges + trend lines, Portfolio RAG bar, "This Week" agenda (tasks due + calls/visits/meetings, grouped Today/Tomorrow/weekday, completed items checked & muted), Recent Activity feed, and a Recent Wins highlight reel.
+- **§3 Wins** — first-class `wins` entity: loggable at any point in a project's lifecycle (Wins tab on Project Detail), timestamped (occurred vs logged), categorized via the admin-configurable **Win Category** picklist, and exportable portfolio-wide with a date range (`/api/export/wins.csv`). The v1 closed-projects report lives on at `/api/export/closures.csv`; `final_summary` stays as the closure narrative.
+- **§4 Task notes** — append-only note history per task (backed by the existing Activity entity, indexed by task + date); latest note surfaces inline in the task list and task modal, notes can be added while creating or editing a task.
+- **§5 Activity logging** — Notes & Activity workspace: log Phone Calls / Site Visits / Client Meetings / Other with date + start/end times, linked **many-to-many** to tasks via the new `task_activity_links` join table; module filters for Notes / Activities / All.
+- **§6 Activity visibility** — clickable Activity-count column on both task lists opens a side drawer (type, date, derived duration, user, notes) with a jump to the full record.
+- **§7 Collapsed nav** — the user selector collapses to a circular initials avatar with a popover switcher (option A).
+
 ## Defaults chosen for the §11 open items
 
 All editable in **Configuration** after the fact:

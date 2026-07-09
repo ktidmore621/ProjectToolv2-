@@ -2,11 +2,11 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, Project, todayIso } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
-import { Page } from "../components/Layout";
 import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
-export function ProjectList() {
+/** Active-projects table — the default view state inside Projects (v2 §1). */
+export function ProjectListView() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "project_code", dir: 1 });
@@ -29,17 +29,15 @@ export function ProjectList() {
   }, [projects, q, sort]);
 
   return (
-    <Page
-      title="Projects"
-      actions={
-        <>
-          <input className={inputCls + " !w-56"} placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input className={inputCls + " !w-56"} placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Btn onClick={() => setShowImport(true)}>Import CSV</Btn>
           <CsvLink href="/api/export/projects.csv?scope=active">Export CSV</CsvLink>
           <Btn kind="primary" onClick={() => setShowNew(true)}>New project</Btn>
-        </>
-      }
-    >
+        </div>
+      </div>
       {!projects ? (
         <Skeleton className="h-96" />
       ) : filtered.length === 0 ? (
@@ -79,7 +77,7 @@ export function ProjectList() {
       )}
       {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreated={load} />}
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImported={load} />}
-    </Page>
+    </>
   );
 }
 

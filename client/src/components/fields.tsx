@@ -56,6 +56,10 @@ export function renderTaskField(key: string, t: Task): React.ReactNode {
         ? <span className="rounded bg-primary-soft px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-primary">Required</span>
         : <span className="text-muted">—</span>;
     case "step_order": return <Mono className="text-muted">{t.step_order}</Mono>;
+    case "activity_count":
+      return t.activity_count
+        ? <span className="rounded-full bg-accent-soft px-2.5 py-0.5 font-mono text-xs font-semibold text-accent">{t.activity_count}</span>
+        : <span className="text-muted">—</span>;
     case "task_type": return <span className="text-muted">{t.task_type.replace("_", " ")}</span>;
     default: return <span className="text-muted">—</span>;
   }
