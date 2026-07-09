@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { IS_DEMO } from "../api";
-import { useSession } from "../state";
+import { api, IS_DEMO, User } from "../api";
+import { useSession, useToast } from "../state";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: "▦", end: true },
@@ -84,6 +84,7 @@ export function Layout() {
                   <option key={u.id} value={u.id}>{u.name}</option>
                 ))}
               </select>
+              {currentUser && <DashboardScopeSetting />}
             </>
           )}
           <button
@@ -98,6 +99,49 @@ export function Layout() {
       <main className="min-w-0 flex-1">
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/**
+ * Personal preference (stored on the user, not in shared Configuration):
+ * whether the dashboard shows only the current user's projects/tasks or
+ * everyone's. Lives in the sidebar's "Working as" area next to the other
+ * per-user controls.
+ */
+function DashboardScopeSetting() {
+  const { currentUser, setCurrentUser, refreshUsers } = useSession();
+  const toast = useToast();
+  if (!currentUser) return null;
+  const scope = currentUser.dashboard_scope ?? "mine";
+
+  const choose = async (next: "mine" | "all") => {
+    if (next === scope) return;
+    const updated = await api.patch<User>(`/api/users/${currentUser.id}`, { dashboard_scope: next });
+    setCurrentUser(updated);
+    refreshUsers();
+    toast(next === "mine" ? "Dashboard now shows only your data" : "Dashboard now shows all data", "success");
+  };
+
+  return (
+    <div className="mt-2">
+      <label className="mb-1.5 block px-1 text-[11px] font-medium text-muted">Dashboard</label>
+      <div role="radiogroup" aria-label="Dashboard scope" className="space-y-0.5">
+        {([["mine", "Show only my data"], ["all", "Show all data"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            role="radio"
+            aria-checked={scope === key}
+            onClick={() => choose(key)}
+            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
+              scope === key ? "bg-primary-soft font-medium text-primary" : "text-muted hover:bg-canvas hover:text-ink"
+            }`}
+          >
+            <span className={`h-2 w-2 shrink-0 rounded-full ${scope === key ? "bg-primary" : "border border-hairline"}`} aria-hidden />
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -159,6 +203,11 @@ function CollapsedUserSwitcher() {
               {u.name}
             </button>
           ))}
+          {currentUser && (
+            <div className="mt-1 border-t border-hairline pt-1">
+              <DashboardScopeSetting />
+            </div>
+          )}
         </div>
       )}
     </div>

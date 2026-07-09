@@ -236,9 +236,18 @@ route("GET", "/api/users", () => ok(db.users.filter((u) => u.is_active).sort((a,
 route("POST", "/api/users", (_m, _q, b) => {
   if (!b.name?.trim() || !b.email?.trim()) return err(400, "Name and email are required");
   if (db.users.some((u) => u.email === b.email.trim())) return err(409, "A user with that email already exists");
-  const u = { id: nextId(), name: b.name.trim(), email: b.email.trim(), is_active: 1 };
+  const u = { id: nextId(), name: b.name.trim(), email: b.email.trim(), is_active: 1, dashboard_scope: "mine" };
   db.users.push(u);
   return ok(u, 201);
+});
+route("PATCH", "/api/users/:id", (m, _q, b) => {
+  const u = db.users.find((x) => x.id === Number(m.id));
+  if (!u) return err(404, "User not found");
+  if (b.dashboard_scope !== undefined) {
+    if (!["mine", "all"].includes(b.dashboard_scope)) return err(400, "dashboard_scope must be 'mine' or 'all'");
+    u.dashboard_scope = b.dashboard_scope;
+  }
+  return ok(u);
 });
 
 // ---- picklists ----
@@ -802,7 +811,14 @@ function addDaysIso(iso: string, days: number): string {
 
 route("GET", "/api/dashboard", (_m, q) => {
   const userId = q.get("user_id") ? Number(q.get("user_id")) : null;
-  const all = db.projects.map((p) => serializeProject(p));
+  const user = userId ? db.users.find((u) => u.id === userId) : undefined;
+  // dashboard_scope = 'mine' narrows every panel to the user's projects/tasks
+  // (same rule as "My open work"); no signed-in user means no scoping.
+  const mine = !!user && (user.dashboard_scope ?? "mine") === "mine";
+  const everyProject = db.projects.map((p) => serializeProject(p));
+  const all = mine ? everyProject.filter((p) => p.assignee_id === userId) : everyProject;
+  const mineProjectIds = new Set(all.map((p) => p.id));
+  const taskIsMine = (x: Row) => (x.assigned_to ? x.assigned_to === userId : mineProjectIds.has(x.project_id));
   const active = all.filter((p) => !p.is_closed);
   const ragBreakdown: Record<string, number> = { red: 0, amber: 0, green: 0 };
   for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
@@ -820,6 +836,7 @@ route("GET", "/api/dashboard", (_m, q) => {
       const p = db.projects.find((pp) => pp.id === x.project_id);
       return p && !closedIds.includes(p.status_id);
     })
+    .filter((x) => !mine || taskIsMine(x))
     .map((x): Row => {
       const p = db.projects.find((pp) => pp.id === x.project_id)!;
       return { ...x, project_code: p.project_code, mcp_name: p.mcp_name };
@@ -829,7 +846,7 @@ route("GET", "/api/dashboard", (_m, q) => {
   const blocked = openTasks.filter((x) => x.status_id === blockedId);
   const myOpen = userId
     ? openTasks
-        .filter((x) => (x.assigned_to ? x.assigned_to === userId : all.find((p) => p.id === x.project_id)?.assignee_id === userId))
+        .filter((x) => (x.assigned_to ? x.assigned_to === userId : everyProject.find((p) => p.id === x.project_id)?.assignee_id === userId))
         .sort((a, b) => ((a.due_date ?? "9999") < (b.due_date ?? "9999") ? -1 : 1)).slice(0, 10)
     : [];
 
@@ -838,7 +855,10 @@ route("GET", "/api/dashboard", (_m, q) => {
   const newlyOverdue = openTasks.filter((x) => x.due_date === yesterday).length;
   const closedThisWeek = all.filter((p) => p.is_closed && p.closed_date && p.closed_date.slice(0, 10) >= weekAgo).length;
   const blockedThisWeek = blockedVal
-    ? db.activities.filter((a) => a.kind === "status_change" && a.new_status === blockedVal.label && a.activity_date >= weekAgo).length
+    ? db.activities.filter(
+        (a) => a.kind === "status_change" && a.new_status === blockedVal.label && a.activity_date >= weekAgo &&
+          (!mine || db.projects.find((p) => p.id === a.project_id)?.assignee_id === userId)
+      ).length
     : 0;
   const trends = {
     active: createdThisWeek ? `+${createdThisWeek} this week` : "No change this week",
@@ -857,11 +877,13 @@ route("GET", "/api/dashboard", (_m, q) => {
 
   const weekTasks = db.project_tasks.filter((x) => {
     if (x.conditional_pending || !x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
+    if (mine && !taskIsMine(x)) return false;
     const p = db.projects.find((pp) => pp.id === x.project_id);
     return p && !closedIds.includes(p.status_id);
   });
   const weekActivities = db.activities.filter(
-    (a) => a.kind === "activity" && a.activity_date >= wkStart + " 00:00:00" && a.activity_date <= wkEnd + " 23:59:59"
+    (a) => a.kind === "activity" && a.activity_date >= wkStart + " 00:00:00" && a.activity_date <= wkEnd + " 23:59:59" &&
+      (!mine || mineProjectIds.has(a.project_id))
   );
   const thisWeek = [
     ...weekTasks.map((x) => {
@@ -886,19 +908,20 @@ route("GET", "/api/dashboard", (_m, q) => {
   ].sort((a, b) => (a.date + (a.time ?? "99:99")).localeCompare(b.date + (b.time ?? "99:99")));
 
   const recentActivity = db.activities
-    .slice()
+    .filter((a) => !mine || mineProjectIds.has(a.project_id))
     .sort((a, b) => (a.activity_date < b.activity_date ? 1 : a.activity_date > b.activity_date ? -1 : b.id - a.id))
     .slice(0, 15)
     .map(serializeActivity);
 
   const recentWins = db.wins
-    .filter((w) => w.occurred_date >= addDaysIso(t, -30))
+    .filter((w) => w.occurred_date >= addDaysIso(t, -30) && (!mine || mineProjectIds.has(w.project_id)))
     .sort((a, b) => (a.occurred_date < b.occurred_date ? 1 : a.occurred_date > b.occurred_date ? -1 : b.id - a.id))
     .slice(0, 6)
     .map(serializeWin);
 
   const pick = (x: any) => ({ id: x.id, project_id: x.project_id, name: x.name, due_date: x.due_date, project_code: x.project_code, mcp_name: x.mcp_name });
   return ok({
+    scope: mine ? "mine" : "all",
     active_count: active.length,
     closed_count: all.length - active.length,
     closed_this_week: closedThisWeek,

@@ -62,7 +62,10 @@ export function resetDemoData() {
 function load(): DemoDB | null {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    return raw ? (JSON.parse(raw) as DemoDB) : null;
+    const loaded = raw ? (JSON.parse(raw) as DemoDB) : null;
+    // upgrade stored v2 data: users saved before the dashboard-scope setting existed
+    if (loaded) for (const u of loaded.users) u.dashboard_scope ??= "mine";
+    return loaded;
   } catch {
     return null;
   }
@@ -231,7 +234,7 @@ function freshDb(): void {
     ["Alex Kim", "alex.kim@example.com"],
   ].map(([name, email]) => {
     const id = nextId();
-    db.users.push({ id, name, email, is_active: 1 });
+    db.users.push({ id, name, email, is_active: 1, dashboard_scope: "mine" });
     return id;
   });
 

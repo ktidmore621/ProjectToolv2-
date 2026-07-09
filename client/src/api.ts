@@ -63,6 +63,7 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  dashboard_scope: "mine" | "all";
 }
 export interface LayoutField {
   id: number;

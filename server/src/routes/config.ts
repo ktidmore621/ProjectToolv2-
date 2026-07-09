@@ -17,6 +17,18 @@ config.post("/users", (req, res) => {
     res.status(409).json({ error: "A user with that email already exists" });
   }
 });
+/** Per-user preferences (not the shared Configuration data) — currently just dashboard scope. */
+config.patch("/users/:id", (req, res) => {
+  const u = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "User not found" });
+  const { dashboard_scope } = req.body;
+  if (dashboard_scope !== undefined) {
+    if (!["mine", "all"].includes(dashboard_scope))
+      return res.status(400).json({ error: "dashboard_scope must be 'mine' or 'all'" });
+    db.prepare("UPDATE users SET dashboard_scope = ? WHERE id = ?").run(dashboard_scope, req.params.id);
+  }
+  res.json(db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id));
+});
 
 // ---------- Picklists & values (§5.1) ----------
 config.get("/picklists", (_req, res) => {

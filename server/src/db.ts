@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
-  is_active INTEGER NOT NULL DEFAULT 1
+  is_active INTEGER NOT NULL DEFAULT 1,
+  dashboard_scope TEXT NOT NULL DEFAULT 'mine' -- 'mine' | 'all' — per-user dashboard filter
 );
 
 CREATE TABLE IF NOT EXISTS picklists (
@@ -190,6 +191,7 @@ function ensureColumn(table: string, column: string, ddl: string) {
 ensureColumn("activities", "activity_type_id", "INTEGER REFERENCES picklist_values(id)");
 ensureColumn("activities", "start_time", "TEXT");
 ensureColumn("activities", "end_time", "TEXT");
+ensureColumn("users", "dashboard_scope", "TEXT NOT NULL DEFAULT 'mine'");
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_activities_task_date ON activities(project_task_id, activity_date);
