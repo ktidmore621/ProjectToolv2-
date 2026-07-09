@@ -21,6 +21,7 @@ interface WeekItem {
 }
 
 interface DashData {
+  scope: "mine" | "all";
   active_count: number;
   closed_count: number;
   closed_this_week: number;
@@ -69,6 +70,7 @@ export function Dashboard() {
         <p className="mt-1 text-sm text-muted">
           {now.toLocaleDateString(undefined, { weekday: "long" })}, {fmtDayOrdinal(now)}
           {!firstName && <> — pick your name in the sidebar to personalize this view</>}
+          {firstName && <> — showing {data.scope === "mine" ? "only your data" : "data for all users"} · change under your name in the sidebar</>}
         </p>
       </header>
 

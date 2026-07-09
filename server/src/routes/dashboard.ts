@@ -21,7 +21,16 @@ function addDaysIso(iso: string, n: number): string {
 
 dashboard.get("/", (req, res) => {
   const userId = req.query.user_id ? Number(req.query.user_id) : null;
-  const all = (db.prepare("SELECT * FROM projects").all() as any[]).map((p) => serializeProject(p));
+  const user = userId ? (db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any) : undefined;
+  // dashboard_scope = 'mine' narrows every panel to the user's projects/tasks,
+  // using the same rule as "My open work": a task is theirs when assigned to
+  // them, or unassigned on a project they own. Without a signed-in user the
+  // scope can't apply, so the dashboard falls back to all data.
+  const mine = !!user && (user.dashboard_scope ?? "mine") === "mine";
+  const everyProject = (db.prepare("SELECT * FROM projects").all() as any[]).map((p) => serializeProject(p));
+  const all = mine ? everyProject.filter((p) => p.assignee_id === userId) : everyProject;
+  const mineProjectIds = new Set(all.map((p) => p.id));
+  const taskIsMine = (t: any) => (t.assigned_to ? t.assigned_to === userId : mineProjectIds.has(t.project_id));
   const active = all.filter((p) => !p.is_closed);
 
   const ragBreakdown = { red: 0, amber: 0, green: 0 } as Record<string, number>;
@@ -36,7 +45,7 @@ dashboard.get("/", (req, res) => {
   const yesterday = addDaysIso(today, -1);
   const weekAgo = addDaysIso(today, -7);
 
-  const openTasks = db
+  let openTasks = db
     .prepare(
       `SELECT t.*, p.project_code, p.mcp_name FROM project_tasks t
        JOIN projects p ON p.id = t.project_id
@@ -45,6 +54,7 @@ dashboard.get("/", (req, res) => {
          AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`
     )
     .all(...doneIds, ...closedStatusIds) as any[];
+  if (mine) openTasks = openTasks.filter(taskIsMine);
 
   const overdue = openTasks
     .filter((t) => t.due_date && t.due_date < today)
@@ -55,7 +65,7 @@ dashboard.get("/", (req, res) => {
     ? openTasks
         .filter((t) => {
           if (t.assigned_to) return t.assigned_to === userId;
-          const p = all.find((x) => x.id === t.project_id);
+          const p = everyProject.find((x) => x.id === t.project_id);
           return p?.assignee_id === userId;
         })
         .sort((a, b) => ((a.due_date ?? "9999") < (b.due_date ?? "9999") ? -1 : 1))
@@ -68,8 +78,10 @@ dashboard.get("/", (req, res) => {
   const closedThisWeek = all.filter((p) => p.is_closed && p.closed_date && p.closed_date.slice(0, 10) >= weekAgo).length;
   const blockedThisWeek = blockedVal
     ? (db.prepare(
-        "SELECT COUNT(*) AS n FROM activities WHERE kind = 'status_change' AND new_status = ? AND activity_date >= ?"
-      ).get(blockedVal.label, weekAgo) as { n: number }).n
+        `SELECT COUNT(*) AS n FROM activities a JOIN projects p ON p.id = a.project_id
+         WHERE a.kind = 'status_change' AND a.new_status = ? AND a.activity_date >= ?
+         ${mine ? "AND p.assignee_id = ?" : ""}`
+      ).get(...(mine ? [blockedVal.label, weekAgo, userId] : [blockedVal.label, weekAgo])) as { n: number }).n
     : 0;
   const trends = {
     active: createdThisWeek ? `+${createdThisWeek} this week` : "No change this week",
@@ -83,7 +95,7 @@ dashboard.get("/", (req, res) => {
   const wkEnd = addDaysIso(wkStart, 6);
   const nowStamp = now.toISOString().slice(0, 16).replace("T", " ");
 
-  const weekTasks = db
+  let weekTasks = db
     .prepare(
       `SELECT t.*, p.mcp_name, p.project_code FROM project_tasks t
        JOIN projects p ON p.id = t.project_id
@@ -91,13 +103,15 @@ dashboard.get("/", (req, res) => {
          AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`
     )
     .all(wkStart, wkEnd, ...closedStatusIds) as any[];
-  const weekActivities = db
+  if (mine) weekTasks = weekTasks.filter(taskIsMine);
+  let weekActivities = db
     .prepare(
       `SELECT a.*, p.mcp_name, p.project_code FROM activities a
        JOIN projects p ON p.id = a.project_id
        WHERE a.kind = 'activity' AND a.activity_date >= ? AND a.activity_date <= ?`
     )
     .all(wkStart + " 00:00:00", wkEnd + " 23:59:59") as any[];
+  if (mine) weekActivities = weekActivities.filter((a) => mineProjectIds.has(a.project_id));
 
   const thisWeek = [
     ...weekTasks.map((t) => ({
@@ -129,17 +143,24 @@ dashboard.get("/", (req, res) => {
     }),
   ].sort((a, b) => (a.date + (a.time ?? "99:99")).localeCompare(b.date + (b.time ?? "99:99")));
 
-  // ---- Recent activity feed (§2.3) — newest N records across all projects ----
+  // ---- Recent activity feed (§2.3) — newest N records across in-scope projects ----
+  const mineIds = [...mineProjectIds];
+  const projectScopeSql = mine ? `WHERE project_id IN (${mineIds.map(() => "?").join(",") || "NULL"})` : "";
   const recentActivity = (db
-    .prepare("SELECT * FROM activities ORDER BY activity_date DESC, id DESC LIMIT 15")
-    .all() as any[]).map(serializeActivity);
+    .prepare(`SELECT * FROM activities ${projectScopeSql} ORDER BY activity_date DESC, id DESC LIMIT 15`)
+    .all(...(mine ? mineIds : [])) as any[]).map(serializeActivity);
 
   // ---- Recent wins (§2.5) — structured wins, last 30 days ----
   const recentWins = (db
-    .prepare("SELECT * FROM wins WHERE occurred_date >= ? ORDER BY occurred_date DESC, id DESC LIMIT 6")
-    .all(addDaysIso(today, -30)) as any[]).map(serializeWin);
+    .prepare(
+      `SELECT * FROM wins WHERE occurred_date >= ?
+       ${mine ? `AND project_id IN (${mineIds.map(() => "?").join(",") || "NULL"})` : ""}
+       ORDER BY occurred_date DESC, id DESC LIMIT 6`
+    )
+    .all(addDaysIso(today, -30), ...(mine ? mineIds : [])) as any[]).map(serializeWin);
 
   res.json({
+    scope: mine ? "mine" : "all",
     active_count: active.length,
     closed_count: all.length - active.length,
     closed_this_week: closedThisWeek,
