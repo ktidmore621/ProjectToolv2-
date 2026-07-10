@@ -136,7 +136,10 @@ export function TaskListView() {
           </table>
         </Card>
       )}
-      {drawerTask && <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} onClose={() => setDrawerTask(null)} />}
+      {drawerTask && (
+        <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} onClose={() => setDrawerTask(null)}
+          onChanged={() => api.get<Task[]>(`/api/tasks${query ? `?${query}` : ""}`).then(setTasks)} />
+      )}
     </>
   );
 }

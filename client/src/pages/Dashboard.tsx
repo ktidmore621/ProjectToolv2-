@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Activity, api, fmtDate, fmtDayOrdinal, fmtTime, Project, Win } from "../api";
+import { canEditActivity, EditActivityButton, EditActivityModal } from "../components/EditActivityModal";
 import {
   ActivityTypeIcon, AlertIcon, ArchiveIcon, BlockedIcon, CheckIcon, FolderIcon, TrophyIcon,
 } from "../components/icons";
@@ -40,10 +41,12 @@ interface DashData {
 export function Dashboard() {
   const { currentUser } = useSession();
   const [data, setData] = useState<DashData | null>(null);
+  const [editItem, setEditItem] = useState<Activity | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.get<DashData>(`/api/dashboard${currentUser ? `?user_id=${currentUser.id}` : ""}`).then(setData);
   }, [currentUser]);
+  useEffect(load, [load]);
 
   const now = new Date();
   const hour = now.getHours();
@@ -119,8 +122,8 @@ export function Dashboard() {
           {data.recent_activity.length === 0 && <EmptyState title="No activity yet" />}
           <ul className="divide-y divide-hairline">
             {data.recent_activity.slice(0, 10).map((a) => (
-              <li key={a.id}>
-                <Link to={`/projects/${a.project_id}`} className="-mx-2 flex items-start gap-2.5 rounded-lg px-2 py-2 hover:bg-canvas">
+              <li key={a.id} className="flex items-start gap-1">
+                <Link to={`/projects/${a.project_id}`} className="-mx-2 flex min-w-0 flex-1 items-start gap-2.5 rounded-lg px-2 py-2 hover:bg-canvas">
                   {a.kind === "activity" ? (
                     <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full"
                       style={{ backgroundColor: tint(a.activity_type_color ?? "#5C6B84", 0.15), color: a.activity_type_color ?? "#5C6B84" }}>
@@ -137,6 +140,9 @@ export function Dashboard() {
                     <span className="mt-0.5 block text-[11px] text-muted">{a.mcp_name} · <Mono>{a.activity_date?.slice(0, 16).replace("T", " ")}</Mono></span>
                   </span>
                 </Link>
+                {canEditActivity(a, currentUser) && (
+                  <EditActivityButton activity={a} onEdit={() => setEditItem(a)} className="mt-2 shrink-0" />
+                )}
               </li>
             ))}
           </ul>
@@ -222,6 +228,10 @@ export function Dashboard() {
           ))}
         </div>
       </div>
+
+      {editItem && (
+        <EditActivityModal activity={editItem} onClose={() => setEditItem(null)} onSaved={load} />
+      )}
     </div>
   );
 }
