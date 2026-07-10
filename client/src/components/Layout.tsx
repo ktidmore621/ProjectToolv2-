@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { api, IS_DEMO, User } from "../api";
-import { useSession, useToast } from "../state";
+import { IS_DEMO } from "../api";
+import { useSession } from "../state";
 import accioLogo from "../assets/accio-logo.png";
 
 const NAV = [
@@ -16,6 +16,8 @@ const NAV = [
 export function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const { users, currentUser, setCurrentUser } = useSession();
+  // Configuration nav item is hidden for users with Show Configuration off (Working As settings)
+  const nav = NAV.filter((n) => n.to !== "/config" || !currentUser || !!currentUser.show_configuration);
 
   return (
     <div className="flex min-h-screen">
@@ -35,8 +37,35 @@ export function Layout() {
             <div className="mt-2 px-3 text-center text-[11px] text-muted">Summon clarity. Deliver results.</div>
           </div>
         )}
+        {/* Working As — kept above the menu so it stays visible as the nav grows (v2 §4).
+            Dashboard scope and other per-user settings live in Configuration → Working As. */}
+        <div className="border-b border-hairline px-2 pb-3">
+          {collapsed ? (
+            <div className="flex justify-center">
+              <CollapsedUserSwitcher />
+            </div>
+          ) : (
+            <>
+              <label className="mb-1.5 block px-1 text-[11px] font-medium text-muted">Working as</label>
+              <select
+                aria-label="Current user"
+                className="w-full rounded-lg border border-hairline bg-surface px-2 py-1.5 text-xs focus:border-accent focus:outline-none"
+                value={currentUser?.id ?? ""}
+                onChange={(e) => {
+                  const u = users.find((x) => x.id === Number(e.target.value));
+                  if (u) setCurrentUser(u);
+                }}
+              >
+                <option value="" disabled>Select user…</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -69,31 +98,9 @@ export function Layout() {
           </div>
         )}
         <div className="border-t border-hairline p-2">
-          {collapsed ? (
-            <CollapsedUserSwitcher />
-          ) : (
-            <>
-              <label className="mb-1.5 block px-1 text-[11px] font-medium text-muted">Working as</label>
-              <select
-                aria-label="Current user"
-                className="w-full rounded-lg border border-hairline bg-surface px-2 py-1.5 text-xs focus:border-accent focus:outline-none"
-                value={currentUser?.id ?? ""}
-                onChange={(e) => {
-                  const u = users.find((x) => x.id === Number(e.target.value));
-                  if (u) setCurrentUser(u);
-                }}
-              >
-                <option value="" disabled>Select user…</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-              {currentUser && <DashboardScopeSetting />}
-            </>
-          )}
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className={`mt-2 rounded-lg py-1.5 text-xs text-muted hover:bg-canvas hover:text-ink ${collapsed ? "w-10 text-center" : "w-full px-2"}`}
+            className={`rounded-lg py-1.5 text-xs text-muted hover:bg-canvas hover:text-ink ${collapsed ? "w-10 text-center" : "w-full px-2"}`}
             aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
           >
             {collapsed ? "»" : "« Collapse"}
@@ -103,49 +110,6 @@ export function Layout() {
       <main className="min-w-0 flex-1">
         <Outlet />
       </main>
-    </div>
-  );
-}
-
-/**
- * Personal preference (stored on the user, not in shared Configuration):
- * whether the dashboard shows only the current user's projects/tasks or
- * everyone's. Lives in the sidebar's "Working as" area next to the other
- * per-user controls.
- */
-function DashboardScopeSetting() {
-  const { currentUser, setCurrentUser, refreshUsers } = useSession();
-  const toast = useToast();
-  if (!currentUser) return null;
-  const scope = currentUser.dashboard_scope ?? "mine";
-
-  const choose = async (next: "mine" | "all") => {
-    if (next === scope) return;
-    const updated = await api.patch<User>(`/api/users/${currentUser.id}`, { dashboard_scope: next });
-    setCurrentUser(updated);
-    refreshUsers();
-    toast(next === "mine" ? "Dashboard now shows only your data" : "Dashboard now shows all data", "success");
-  };
-
-  return (
-    <div className="mt-2">
-      <label className="mb-1.5 block px-1 text-[11px] font-medium text-muted">Dashboard</label>
-      <div role="radiogroup" aria-label="Dashboard scope" className="space-y-0.5">
-        {([["mine", "Show only my data"], ["all", "Show all data"]] as const).map(([key, label]) => (
-          <button
-            key={key}
-            role="radio"
-            aria-checked={scope === key}
-            onClick={() => choose(key)}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
-              scope === key ? "bg-primary-soft font-medium text-primary" : "text-muted hover:bg-canvas hover:text-ink"
-            }`}
-          >
-            <span className={`h-2 w-2 shrink-0 rounded-full ${scope === key ? "bg-primary" : "border border-hairline"}`} aria-hidden />
-            {label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -191,7 +155,7 @@ function CollapsedUserSwitcher() {
         {currentUser ? initialsOf(currentUser.name) : "?"}
       </button>
       {open && (
-        <div className="absolute bottom-0 left-full z-30 ml-3 w-52 rounded-xl border border-hairline bg-surface p-1.5 shadow-lift">
+        <div className="absolute left-full top-0 z-30 ml-3 w-52 rounded-xl border border-hairline bg-surface p-1.5 shadow-lift">
           <div className="px-2 pb-1.5 pt-1 text-[11px] font-medium text-muted">Working as</div>
           {users.map((u) => (
             <button
@@ -207,11 +171,6 @@ function CollapsedUserSwitcher() {
               {u.name}
             </button>
           ))}
-          {currentUser && (
-            <div className="mt-1 border-t border-hairline pt-1">
-              <DashboardScopeSetting />
-            </div>
-          )}
         </div>
       )}
     </div>

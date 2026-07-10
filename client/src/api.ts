@@ -64,6 +64,10 @@ export interface User {
   name: string;
   email: string;
   dashboard_scope: "mine" | "all";
+  /** Assignee pre-applied on the Projects views: null = match dashboard default, 'all' = everyone, else a user id. */
+  default_assignee_filter: string | null;
+  /** Whether the Configuration page (and its nav item) is visible to this user. */
+  show_configuration: number;
 }
 export interface LayoutField {
   id: number;

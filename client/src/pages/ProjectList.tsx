@@ -3,12 +3,15 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, Project, todayIso } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
 import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
-import { useConfig, useSession, useToast } from "../state";
+import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Active-projects table — the default view state inside Projects (v2 §1). */
 export function ProjectListView() {
+  const { users } = useSession();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [q, setQ] = useState("");
+  // Quick filter: defaults from the current user's Working As settings
+  const [assignee, setAssignee] = useDefaultAssignee();
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "project_code", dir: 1 });
   const [showNew, setShowNew] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -18,6 +21,7 @@ export function ProjectListView() {
 
   const filtered = useMemo(() => {
     let out = projects ?? [];
+    if (assignee) out = out.filter((p) => String(p.assignee_id) === assignee);
     if (q.trim()) {
       const s = q.toLowerCase();
       out = out.filter((p) => [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name, p.status_label].some((f) => f?.toLowerCase().includes(s)));
@@ -26,12 +30,17 @@ export function ProjectListView() {
       const av = a[sort.key] ?? "", bv = b[sort.key] ?? "";
       return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
     });
-  }, [projects, q, sort]);
+  }, [projects, q, assignee, sort]);
 
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input className={inputCls + " !w-56"} placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
+        <select className={inputCls + " !w-auto"} value={assignee} aria-label="Filter by assignee"
+          onChange={(e) => setAssignee(e.target.value)}>
+          <option value="">All assignees</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Btn onClick={() => setShowImport(true)}>Import CSV</Btn>
           <CsvLink href="/api/export/projects.csv?scope=active">Export CSV</CsvLink>

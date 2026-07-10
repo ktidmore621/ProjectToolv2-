@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, fmtDate, Project, Task } from "../api";
 import { ActivityDrawer } from "../components/ActivityDrawer";
 import { Card, Chip, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
-import { useConfig, useSession } from "../state";
+import { defaultAssigneeOf, useConfig, useSession } from "../state";
 
 /**
  * Cross-project task list (v2 §1) — every task across every project the user
@@ -13,11 +13,23 @@ import { useConfig, useSession } from "../state";
  */
 export function TaskListView() {
   const [params, setParams] = useSearchParams();
-  const { users } = useSession();
+  const { users, currentUser } = useSession();
   const { activeValues } = useConfig();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+
+  // Quick-filter default from the user's Working As settings: applied once per
+  // user (so clearing it sticks) and only when the URL doesn't already carry an
+  // explicit assignee — deep links keep winning.
+  const uid = currentUser?.id;
+  const appliedDefaultFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (uid == null || appliedDefaultFor.current === uid) return;
+    appliedDefaultFor.current = uid;
+    const def = defaultAssigneeOf(currentUser);
+    if (def && params.get("assigned_to") == null) setFilter("assigned_to", def);
+  }, [uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filters = {
     overdue: params.get("overdue") === "1",

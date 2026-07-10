@@ -70,7 +70,7 @@ export function Dashboard() {
         <p className="mt-1 text-sm text-muted">
           {now.toLocaleDateString(undefined, { weekday: "long" })}, {fmtDayOrdinal(now)}
           {!firstName && <> — pick your name in the sidebar to personalize this view</>}
-          {firstName && <> — showing {data.scope === "mine" ? "only your data" : "data for all users"} · change under your name in the sidebar</>}
+          {firstName && <> — showing {data.scope === "mine" ? "only your data" : "data for all users"} · set per user in Configuration → Working As</>}
         </p>
       </header>
 

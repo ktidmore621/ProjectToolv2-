@@ -63,8 +63,19 @@ function load(): DemoDB | null {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     const loaded = raw ? (JSON.parse(raw) as DemoDB) : null;
-    // upgrade stored v2 data: users saved before the dashboard-scope setting existed
-    if (loaded) for (const u of loaded.users) u.dashboard_scope ??= "mine";
+    // upgrade stored v2 data: users saved before the per-user settings existed
+    if (loaded) {
+      for (const u of loaded.users) {
+        u.dashboard_scope ??= "mine";
+        u.default_assignee_filter ??= null;
+        u.show_configuration ??= 1;
+      }
+      if (!loaded.users.some((u) => u.name === "Leader" || u.email === "leader@example.com"))
+        loaded.users.push({
+          id: ++loaded.seq, name: "Leader", email: "leader@example.com", is_active: 1,
+          dashboard_scope: "all", default_assignee_filter: null, show_configuration: 1,
+        });
+    }
     return loaded;
   } catch {
     return null;
@@ -228,13 +239,15 @@ function freshDb(): void {
   ]);
 
   const users = [
-    ["Morgan Hale", "morgan.hale@example.com"],
-    ["Priya Raman", "priya.raman@example.com"],
-    ["Devon Carter", "devon.carter@example.com"],
-    ["Alex Kim", "alex.kim@example.com"],
-  ].map(([name, email]) => {
+    ["Morgan Hale", "morgan.hale@example.com", "mine"],
+    ["Priya Raman", "priya.raman@example.com", "mine"],
+    ["Devon Carter", "devon.carter@example.com", "mine"],
+    ["Alex Kim", "alex.kim@example.com", "mine"],
+    // Leader: dashboard defaults to Show All, no default assignee filter
+    ["Leader", "leader@example.com", "all"],
+  ].map(([name, email, scope]) => {
     const id = nextId();
-    db.users.push({ id, name, email, is_active: 1, dashboard_scope: "mine" });
+    db.users.push({ id, name, email, is_active: 1, dashboard_scope: scope, default_assignee_filter: null, show_configuration: 1 });
     return id;
   });
 

@@ -126,13 +126,16 @@ export function seed() {
   ]);
 
   // ---- Users ----
-  const insUser = db.prepare("INSERT INTO users (name, email) VALUES (?, ?)");
+  const insUser = db.prepare("INSERT INTO users (name, email, dashboard_scope) VALUES (?, ?, ?)");
   const users = [
-    ["Morgan Hale", "morgan.hale@example.com"],
-    ["Priya Raman", "priya.raman@example.com"],
-    ["Devon Carter", "devon.carter@example.com"],
-    ["Alex Kim", "alex.kim@example.com"],
-  ].map(([n, e]) => insUser.run(n, e).lastInsertRowid as number);
+    ["Morgan Hale", "morgan.hale@example.com", "mine"],
+    ["Priya Raman", "priya.raman@example.com", "mine"],
+    ["Devon Carter", "devon.carter@example.com", "mine"],
+    ["Alex Kim", "alex.kim@example.com", "mine"],
+    // Leader: dashboard defaults to Show All and no default assignee filter,
+    // so every view opens unfiltered
+    ["Leader", "leader@example.com", "all"],
+  ].map(([n, e, scope]) => insUser.run(n, e, scope).lastInsertRowid as number);
 
   // ---- Default workflow template (§4.3) ----
   const prio = (key: string) => valueByMapsTo("Task Priority", key)!.id;

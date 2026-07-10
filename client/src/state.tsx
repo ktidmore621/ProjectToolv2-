@@ -12,6 +12,37 @@ interface Session {
 const SessionCtx = createContext<Session>(null!);
 export const useSession = () => useContext(SessionCtx);
 
+/**
+ * The assignee quick-filter value a view should open with, from the user's
+ * Working As settings: their explicit Default Assignee Filter if set
+ * ('all' = everyone → no filter), otherwise derived from their Dashboard
+ * Default (My Items Only → themselves, Show All → no filter).
+ */
+export function defaultAssigneeOf(u: User | null): string {
+  if (!u) return "";
+  if (u.default_assignee_filter === "all") return "";
+  if (u.default_assignee_filter) return u.default_assignee_filter;
+  return (u.dashboard_scope ?? "mine") === "mine" ? String(u.id) : "";
+}
+
+/**
+ * Assignee quick-filter state for the Projects views: starts at the current
+ * user's default and re-applies it when the working-as user changes; manual
+ * overrides stick until then.
+ */
+export function useDefaultAssignee(): [string, (v: string) => void] {
+  const { currentUser } = useSession();
+  const [assignee, setAssignee] = useState(() => defaultAssigneeOf(currentUser));
+  const uid = currentUser?.id;
+  const applied = useRef(uid);
+  useEffect(() => {
+    if (applied.current === uid) return;
+    applied.current = uid;
+    setAssignee(defaultAssigneeOf(currentUser));
+  }, [uid]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [assignee, setAssignee];
+}
+
 // ---------- Toasts (§10.5: plain-language confirmations) ----------
 
 export interface Toast {

@@ -1,12 +1,13 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { api, LayoutField, Picklist, PickValue, Project, Task } from "../api";
+import { api, LayoutField, Picklist, PickValue, Project, Task, User } from "../api";
 import { renderProjectField, renderTaskField } from "../components/fields";
 import { Page } from "../components/Layout";
 import { Btn, Card, Chip, Field, inputCls, Modal, Mono, ragEdge, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
 const TABS = [
+  { to: "working-as", label: "Working As" },
   { to: "picklists", label: "Picklists & Values" },
   { to: "templates", label: "Workflow Templates" },
   { to: "fields", label: "Field Requirements" },
@@ -14,12 +15,15 @@ const TABS = [
 ];
 
 export function Configuration() {
+  const { currentUser } = useSession();
+  // Users with Show Configuration off (Working As tab) can't see this page
+  if (currentUser && !currentUser.show_configuration) return <Navigate to="/" replace />;
   return (
     <Page title="Configuration">
       <p className="mb-4 max-w-3xl text-sm text-muted">
-        Open to all users — no admin gate for MVP (§5). Two guardrails always apply: in-use picklist values are
-        deactivated rather than deleted, and template edits are never retroactive — in-flight projects keep the
-        task list they were generated with.
+        Visible to every user whose <b>Show Configuration</b> setting is on (Working As tab). Two guardrails always
+        apply: in-use picklist values are deactivated rather than deleted, and template edits are never retroactive —
+        in-flight projects keep the task list they were generated with.
       </p>
       <div className="mb-5 flex gap-1 border-b border-hairline">
         {TABS.map((t) => (
@@ -30,13 +34,112 @@ export function Configuration() {
         ))}
       </div>
       <Routes>
+        <Route path="working-as" element={<WorkingAs />} />
         <Route path="picklists" element={<Picklists />} />
         <Route path="templates" element={<Templates />} />
         <Route path="fields" element={<FieldRequirements />} />
         <Route path="layouts" element={<Layouts />} />
-        <Route path="*" element={<Navigate to="picklists" replace />} />
+        <Route path="*" element={<Navigate to="working-as" replace />} />
       </Routes>
     </Page>
+  );
+}
+
+// ================= Working As (v2) =================
+
+/**
+ * Single source of truth for who can use the system: this list drives the
+ * sidebar user switcher and every assignment dropdown (both read /api/users),
+ * plus the per-user defaults — dashboard scope, the assignee quick-filter
+ * pre-applied on the Projects views, and Configuration visibility.
+ */
+function WorkingAs() {
+  const { users, currentUser, setCurrentUser, refreshUsers } = useSession();
+  const toast = useToast();
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+
+  async function patchUser(u: User, patch: Record<string, unknown>) {
+    try {
+      const updated = await api.patch<User>(`/api/users/${u.id}`, patch);
+      if (currentUser?.id === u.id) setCurrentUser(updated);
+      await refreshUsers();
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  async function addUser(e: FormEvent) {
+    e.preventDefault();
+    try {
+      await api.post("/api/users", { name: newName, email: newEmail });
+      await refreshUsers();
+      toast(`Added ${newName} — they now appear in the user switcher and assignment dropdowns.`, "success");
+      setNewName(""); setNewEmail("");
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  if (!users.length) return <Skeleton className="h-72" />;
+
+  return (
+    <Card className="max-w-4xl p-4">
+      <p className="mb-3 text-sm text-muted">
+        These users can access the system and appear in every assignment dropdown. <b>Dashboard Default</b> controls
+        whether their dashboard opens scoped to their own items or to everything; <b>Default Assignee Filter</b> is the
+        assignee pre-applied on the Project List, Kanban Board and Task List (they can still change it there);
+        <b> Show Configuration</b> controls whether this Configuration page is visible to them.
+      </p>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-hairline text-left text-xs font-semibold text-muted">
+            <th className="py-2 pr-3">User</th>
+            <th className="py-2 pr-3">Dashboard Default</th>
+            <th className="py-2 pr-3">Default Assignee Filter</th>
+            <th className="py-2">Show Configuration</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.id} className="border-b border-hairline last:border-0">
+              <td className="py-2 pr-3">
+                <span className="font-medium">{u.name}</span>
+                {currentUser?.id === u.id && (
+                  <span className="ml-1.5 rounded bg-primary-soft px-1.5 py-px text-[10px] font-semibold uppercase text-primary">you</span>
+                )}
+                <div className="text-xs text-muted">{u.email}</div>
+              </td>
+              <td className="py-2 pr-3">
+                <select className={inputCls + " !w-auto"} value={u.dashboard_scope ?? "mine"}
+                  aria-label={`Dashboard default for ${u.name}`}
+                  onChange={(e) => patchUser(u, { dashboard_scope: e.target.value })}>
+                  <option value="mine">My Items Only</option>
+                  <option value="all">Show All</option>
+                </select>
+              </td>
+              <td className="py-2 pr-3">
+                <select className={inputCls + " !w-auto"} value={u.default_assignee_filter ?? ""}
+                  aria-label={`Default assignee filter for ${u.name}`}
+                  onChange={(e) => patchUser(u, { default_assignee_filter: e.target.value || null })}>
+                  <option value="">Match dashboard default</option>
+                  <option value="all">Everyone (no filter)</option>
+                  {users.map((x) => <option key={x.id} value={String(x.id)}>{x.name}</option>)}
+                </select>
+              </td>
+              <td className="py-2">
+                <input type="checkbox" checked={!!u.show_configuration}
+                  disabled={currentUser?.id === u.id}
+                  title={currentUser?.id === u.id ? "You can't hide Configuration from yourself" : undefined}
+                  aria-label={`Show Configuration to ${u.name}`}
+                  onChange={(e) => patchUser(u, { show_configuration: e.target.checked ? 1 : 0 })} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <form onSubmit={addUser} className="mt-3 flex items-end gap-2 border-t border-hairline pt-3">
+        <Field label="Name"><input className={inputCls + " !w-48"} required value={newName} onChange={(e) => setNewName(e.target.value)} /></Field>
+        <Field label="Email"><input type="email" className={inputCls + " !w-64"} required value={newEmail} onChange={(e) => setNewEmail(e.target.value)} /></Field>
+        <Btn kind="primary" type="submit">Add user</Btn>
+      </form>
+    </Card>
   );
 }
 
