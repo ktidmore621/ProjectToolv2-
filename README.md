@@ -1,10 +1,10 @@
-# Customer Assignment Tool
+# Accio
 
-A lightweight, configurable workflow application for tracking at-risk customer (MCP) recovery work performed by assigned colleagues (BAs/BEAs). Built to the **Customer Assignment Tool — Master Product & Technical Specification**.
+A lightweight, configurable workflow application for tracking at-risk customer (MCP) recovery work performed by assigned colleagues (BAs/BEAs). Built to the **Master Product & Technical Specification** (originally titled "Customer Assignment Tool").
 
 ## Easiest demo: the single-file version (no installs at all)
 
-`demo/Customer Assignment Tool (Demo).html` is the entire app packed into one HTML file. Download that one file, double-click it, and it opens in your browser — no Node.js, no server, no IT approvals. The "server" runs inside the browser: all screens and business rules behave identically, sample data included, and your changes are remembered by that browser (a **Reset data** link in the sidebar restores the samples). To rebuild it after code changes: `npm run build:demo`.
+`demo/Accio (Demo).html` is the entire app packed into one HTML file. Download that one file, double-click it, and it opens in your browser — no Node.js, no server, no IT approvals. The "server" runs inside the browser: all screens and business rules behave identically, sample data included, and your changes are remembered by that browser (a **Reset data** link in the sidebar restores the samples). To rebuild it after code changes: `npm run build:demo`.
 
 Ideal for demos and requirements walkthroughs. The server version below is the one to deploy when the team starts using it for real, since the demo file's data lives only in each person's own browser.
 

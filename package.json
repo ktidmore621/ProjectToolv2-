@@ -1,8 +1,8 @@
 {
-  "name": "customer-assignment-tool",
+  "name": "accio",
   "private": true,
   "version": "1.0.0",
-  "description": "Customer Assignment Tool — configurable workflow app for tracking at-risk customer (MCP) recovery work",
+  "description": "Accio \u2014 configurable workflow app for tracking at-risk customer (MCP) recovery work",
   "workspaces": [
     "server",
     "client"
@@ -11,7 +11,7 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "seed": "npm run seed -w server",
     "build": "npm run build -w client",
-    "build:demo": "npm run build:demo -w client && node -e \"require('fs').mkdirSync('demo',{recursive:true}); require('fs').copyFileSync('client/dist-demo/index.html','demo/Customer Assignment Tool (Demo).html')\"",
+    "build:demo": "npm run build:demo -w client && node -e \"require('fs').mkdirSync('demo',{recursive:true}); require('fs').copyFileSync('client/dist-demo/index.html','demo/Accio (Demo).html')\"",
     "start": "npm run start -w server",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
   },
