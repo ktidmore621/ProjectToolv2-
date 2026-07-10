@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   is_active INTEGER NOT NULL DEFAULT 1,
-  dashboard_scope TEXT NOT NULL DEFAULT 'mine' -- 'mine' | 'all' — per-user dashboard filter
+  dashboard_scope TEXT NOT NULL DEFAULT 'mine',  -- 'mine' | 'all' — per-user dashboard filter
+  default_assignee_filter TEXT,                  -- null = match dashboard default | 'all' = everyone | user id
+  show_configuration INTEGER NOT NULL DEFAULT 1  -- whether the Configuration page is visible to this user
 );
 
 CREATE TABLE IF NOT EXISTS picklists (
@@ -192,6 +194,8 @@ ensureColumn("activities", "activity_type_id", "INTEGER REFERENCES picklist_valu
 ensureColumn("activities", "start_time", "TEXT");
 ensureColumn("activities", "end_time", "TEXT");
 ensureColumn("users", "dashboard_scope", "TEXT NOT NULL DEFAULT 'mine'");
+ensureColumn("users", "default_assignee_filter", "TEXT");
+ensureColumn("users", "show_configuration", "INTEGER NOT NULL DEFAULT 1");
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_activities_task_date ON activities(project_task_id, activity_date);
@@ -242,6 +246,14 @@ export function ensureV2Config() {
       "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES ('task_list', 'activity_count', 'Activities', ?, 1, 0)"
     ).run((max.m ?? 0) + 1);
   }
+
+  // Leader user: dashboard defaults to Show All, no default assignee filter,
+  // so every view opens unfiltered for them.
+  const hasLeader = db
+    .prepare("SELECT id FROM users WHERE name = 'Leader' OR email = 'leader@example.com'")
+    .get();
+  if (!hasLeader)
+    db.prepare("INSERT INTO users (name, email, dashboard_scope) VALUES ('Leader', 'leader@example.com', 'all')").run();
 }
 ensureV2Config();
 

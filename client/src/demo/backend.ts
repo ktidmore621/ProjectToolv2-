@@ -236,7 +236,7 @@ route("GET", "/api/users", () => ok(db.users.filter((u) => u.is_active).sort((a,
 route("POST", "/api/users", (_m, _q, b) => {
   if (!b.name?.trim() || !b.email?.trim()) return err(400, "Name and email are required");
   if (db.users.some((u) => u.email === b.email.trim())) return err(409, "A user with that email already exists");
-  const u = { id: nextId(), name: b.name.trim(), email: b.email.trim(), is_active: 1, dashboard_scope: "mine" };
+  const u = { id: nextId(), name: b.name.trim(), email: b.email.trim(), is_active: 1, dashboard_scope: "mine", default_assignee_filter: null, show_configuration: 1 };
   db.users.push(u);
   return ok(u, 201);
 });
@@ -247,6 +247,18 @@ route("PATCH", "/api/users/:id", (m, _q, b) => {
     if (!["mine", "all"].includes(b.dashboard_scope)) return err(400, "dashboard_scope must be 'mine' or 'all'");
     u.dashboard_scope = b.dashboard_scope;
   }
+  if (b.default_assignee_filter !== undefined) {
+    // null = match dashboard default, 'all' = everyone, otherwise a user id
+    const v = b.default_assignee_filter;
+    if (v === null || v === "") u.default_assignee_filter = null;
+    else if (v === "all") u.default_assignee_filter = "all";
+    else {
+      const target = db.users.find((x) => x.id === Number(v));
+      if (!target) return err(400, "default_assignee_filter must be 'all' or a valid user id");
+      u.default_assignee_filter = String(target.id);
+    }
+  }
+  if (b.show_configuration !== undefined) u.show_configuration = b.show_configuration ? 1 : 0;
   return ok(u);
 });
 

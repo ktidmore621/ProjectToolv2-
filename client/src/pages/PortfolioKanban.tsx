@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, PickValue, Project } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
 import { inputCls, ragEdge, Skeleton } from "../components/ui";
-import { useConfig, useSession, useToast } from "../state";
+import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Portfolio Kanban — v1's standalone screen, now a view state inside Projects (v2 §1). */
 export function PortfolioKanbanView() {
@@ -14,7 +14,9 @@ export function PortfolioKanbanView() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [dragging, setDragging] = useState<Project | null>(null);
-  const [filters, setFilters] = useState({ assignee_id: "", rag: "", risk_level_id: "", template_id: "" });
+  // Assignee quick filter defaults from the current user's Working As settings
+  const [assignee, setAssignee] = useDefaultAssignee();
+  const [filters, setFilters] = useState({ rag: "", risk_level_id: "", template_id: "" });
   const [templates, setTemplates] = useState<any[]>([]);
   const cardFields = useLayout("portfolio_card");
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -25,9 +27,10 @@ export function PortfolioKanbanView() {
 
   const load = useCallback(() => {
     const qs = new URLSearchParams();
+    if (assignee) qs.set("assignee_id", assignee);
     Object.entries(filters).forEach(([k, v]) => v && qs.set(k, v));
     api.get<Project[]>(`/api/projects?${qs}`).then(setProjects);
-  }, [filters]);
+  }, [filters, assignee]);
   useEffect(load, [load]);
   useEffect(() => { api.get("/api/templates").then(setTemplates); }, []);
 
@@ -71,8 +74,8 @@ export function PortfolioKanbanView() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-          <select className={inputCls + " !w-auto"} value={filters.assignee_id} aria-label="Filter by assignee"
-            onChange={(e) => setFilters({ ...filters, assignee_id: e.target.value })}>
+          <select className={inputCls + " !w-auto"} value={assignee} aria-label="Filter by assignee"
+            onChange={(e) => setAssignee(e.target.value)}>
             <option value="">All assignees</option>
             {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>

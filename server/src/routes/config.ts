@@ -17,15 +17,29 @@ config.post("/users", (req, res) => {
     res.status(409).json({ error: "A user with that email already exists" });
   }
 });
-/** Per-user preferences (not the shared Configuration data) — currently just dashboard scope. */
+/** Per-user settings, edited from Configuration → Working As. */
 config.patch("/users/:id", (req, res) => {
   const u = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
   if (!u) return res.status(404).json({ error: "User not found" });
-  const { dashboard_scope } = req.body;
+  const { dashboard_scope, default_assignee_filter, show_configuration } = req.body;
   if (dashboard_scope !== undefined) {
     if (!["mine", "all"].includes(dashboard_scope))
       return res.status(400).json({ error: "dashboard_scope must be 'mine' or 'all'" });
     db.prepare("UPDATE users SET dashboard_scope = ? WHERE id = ?").run(dashboard_scope, req.params.id);
+  }
+  if (default_assignee_filter !== undefined) {
+    // null = match dashboard default, 'all' = everyone, otherwise a user id
+    let v: string | null = default_assignee_filter;
+    if (v === null || v === "") v = null;
+    else if (v !== "all") {
+      const target = db.prepare("SELECT id FROM users WHERE id = ?").get(Number(v)) as { id: number } | undefined;
+      if (!target) return res.status(400).json({ error: "default_assignee_filter must be 'all' or a valid user id" });
+      v = String(target.id);
+    }
+    db.prepare("UPDATE users SET default_assignee_filter = ? WHERE id = ?").run(v, req.params.id);
+  }
+  if (show_configuration !== undefined) {
+    db.prepare("UPDATE users SET show_configuration = ? WHERE id = ?").run(show_configuration ? 1 : 0, req.params.id);
   }
   res.json(db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id));
 });
