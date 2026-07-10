@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Activity, api, ApiError, fmtDate, fmtHours, fmtTime, Project, Task, todayIso, Win } from "../api";
 import { ActivityDrawer } from "../components/ActivityDrawer";
+import { canEditActivity, EditActivityButton, EditActivityModal } from "../components/EditActivityModal";
 import { renderProjectField, renderTaskField, useLayout } from "../components/fields";
 import { ActivityTypeIcon, TrophyIcon } from "../components/icons";
 import { Page } from "../components/Layout";
@@ -216,7 +217,10 @@ export function ProjectDetail() {
         <TaskModal task={detailTask} project={project} readOnly={readOnly}
           onClose={() => setDetailTask(null)} onChanged={load} />
       )}
-      {drawerTask && <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} onClose={() => setDrawerTask(null)} />}
+      {drawerTask && (
+        <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} readOnly={readOnly}
+          onClose={() => setDrawerTask(null)} onChanged={load} />
+      )}
       {showClose && <CloseModal project={project} onClose={() => setShowClose(false)} onClosed={load} />}
       {showAddTask && <AddTaskModal project={project} users={users} onClose={() => setShowAddTask(false)} onAdded={load} />}
       {showRag && <RagModal project={project} onClose={() => setShowRag(false)} onSaved={load} />}
@@ -583,6 +587,7 @@ function NotesTab({ project, readOnly, kind, highlightId, onHighlighted, onChang
   const [note, setNote] = useState("");
   const [catId, setCatId] = useState<number>(activeValues("Note Category").find((v) => v.is_default)?.id ?? 0);
   const [showLog, setShowLog] = useState(false);
+  const [editItem, setEditItem] = useState<Activity | null>(null);
   const highlightRef = useRef<HTMLLIElement | null>(null);
 
   const kindParam = kind === "all" ? "" : filter === "notes" ? "&kind=note" : filter === "activities" ? "&kind=activity" : "&kind=note,activity";
@@ -681,6 +686,9 @@ function NotesTab({ project, readOnly, kind, highlightId, onHighlighted, onChang
                   </div>
                 )}
               </div>
+              {!readOnly && canEditActivity(a, currentUser) && (
+                <EditActivityButton activity={a} onEdit={() => setEditItem(a)} className="mt-0.5 shrink-0" />
+              )}
             </li>
           ))}
           {items?.length === 0 && <li className="px-4 py-8 text-center text-sm text-muted">Nothing here yet.</li>}
@@ -689,6 +697,10 @@ function NotesTab({ project, readOnly, kind, highlightId, onHighlighted, onChang
       {showLog && (
         <LogActivityModal project={project} onClose={() => setShowLog(false)}
           onLogged={() => { load(); onChanged?.(); }} />
+      )}
+      {editItem && (
+        <EditActivityModal activity={editItem} onClose={() => setEditItem(null)}
+          onSaved={() => { load(); onChanged?.(); }} />
       )}
     </div>
   );

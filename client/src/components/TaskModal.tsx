@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Activity, api, fmtDate, fmtHours, fmtTime, Project, Task } from "../api";
 import { useConfig, useSession, useToast } from "../state";
+import { canEditActivity, EditActivityButton, EditActivityModal } from "./EditActivityModal";
 import { ActivityTypeIcon } from "./icons";
 import { Btn, Chip, Field, inputCls, Modal, Mono, tint } from "./ui";
 
@@ -33,12 +34,16 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
   const [notes, setNotes] = useState<Activity[] | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
   const [linked, setLinked] = useState<Activity[] | null>(null);
+  const [editRecord, setEditRecord] = useState<Activity | null>(null);
 
   const loadNotes = useCallback(() => {
     api.get<Activity[]>(`/api/activities?task_id=${task.id}&kind=note`).then(setNotes);
   }, [task.id]);
   useEffect(loadNotes, [loadNotes]);
-  useEffect(() => { api.get<Activity[]>(`/api/tasks/${task.id}/activities`).then(setLinked); }, [task.id]);
+  const loadLinked = useCallback(() => {
+    api.get<Activity[]>(`/api/tasks/${task.id}/activities`).then(setLinked);
+  }, [task.id]);
+  useEffect(loadLinked, [loadLinked]);
 
   async function saveFields(e: FormEvent) {
     e.preventDefault();
@@ -75,7 +80,8 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
   const visibleNotes = showAllNotes ? notes ?? [] : (notes ?? []).slice(0, 1);
 
   return (
-    <Modal title={task.name} onClose={onClose} wide>
+    // While the nested edit dialog is open, Escape/backdrop should close it alone
+    <Modal title={task.name} onClose={() => !editRecord && onClose()} wide>
       <div className="grid gap-5 md:grid-cols-2">
         {/* Left: task fields */}
         <form onSubmit={saveFields} className="space-y-3">
@@ -126,13 +132,16 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
                     <ActivityTypeIcon typeKey={a.activity_type_key} size={12} />
                   </span>
                   <span className="min-w-0">
-                    <button className="font-medium hover:underline"
+                    <button type="button" className="font-medium hover:underline"
                       onClick={() => { onClose(); navigate(`/projects/${a.project_id}?tab=notes&activity=${a.id}`); }}>
                       {a.activity_type_label ?? "Activity"}
                     </button>
                     <span className="text-muted"> · <Mono>{fmtDate(a.activity_date)}</Mono>
                       {a.duration_minutes != null && <> · {fmtHours(a.duration_minutes)}</>} · {a.user_name}</span>
                   </span>
+                  {!readOnly && canEditActivity(a, currentUser) && (
+                    <EditActivityButton activity={a} onEdit={() => setEditRecord(a)} className="ml-auto shrink-0 !p-0.5" />
+                  )}
                 </li>
               ))}
             </ul>
@@ -155,9 +164,14 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
               <li key={n.id} className={`rounded-lg border p-3 ${i === 0 ? "border-accent/40 bg-accent-soft/40" : "border-hairline"}`}>
                 {i === 0 && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent">Latest</div>}
                 <p className="text-sm leading-snug">{n.note}</p>
-                <div className="mt-1.5 text-[11px] text-muted">
-                  {n.user_name} · <Mono>{n.activity_date?.slice(0, 16).replace("T", " ")}</Mono>
-                  {n.category_label && <> · {n.category_label}</>}
+                <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted">
+                  <span>
+                    {n.user_name} · <Mono>{n.activity_date?.slice(0, 16).replace("T", " ")}</Mono>
+                    {n.category_label && <> · {n.category_label}</>}
+                  </span>
+                  {!readOnly && canEditActivity(n, currentUser) && (
+                    <EditActivityButton activity={n} onEdit={() => setEditRecord(n)} className="ml-auto !p-0.5" />
+                  )}
                 </div>
               </li>
             ))}
@@ -169,6 +183,10 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
           )}
         </div>
       </div>
+      {editRecord && (
+        <EditActivityModal activity={editRecord} onClose={() => setEditRecord(null)}
+          onSaved={() => { loadNotes(); loadLinked(); onChanged(); }} />
+      )}
     </Modal>
   );
 }

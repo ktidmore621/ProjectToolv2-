@@ -154,3 +154,70 @@ activities.post("/", (req, res) => {
   const id = create();
   res.status(201).json(serializeActivity(db.prepare("SELECT * FROM activities WHERE id = ?").get(id)));
 });
+
+/**
+ * Edit a note or logged activity in place (same ID — a correction, not a new
+ * entry). Author-only: `user_id` in the body must match the record's author.
+ * Status-change/system entries are audit history and stay immutable.
+ */
+activities.patch("/:id", (req, res) => {
+  const a = db.prepare("SELECT * FROM activities WHERE id = ?").get(req.params.id) as any;
+  if (!a) return res.status(404).json({ error: "Activity not found" });
+  if (a.kind !== "note" && a.kind !== "activity")
+    return res.status(400).json({ error: "Status changes and system entries can't be edited" });
+  const editorId = Number(req.body.user_id);
+  if (!a.user_id || !editorId || a.user_id !== editorId)
+    return res.status(403).json({ error: "Only the author can edit this record" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(a.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its history is read-only" });
+  if ("note" in req.body && !req.body.note?.trim())
+    return res.status(400).json({ error: "Note text is required" });
+
+  if (a.kind === "note") {
+    db.prepare("UPDATE activities SET note = ?, category_id = ? WHERE id = ?").run(
+      "note" in req.body ? req.body.note.trim() : a.note,
+      "category_id" in req.body ? req.body.category_id ?? null : a.category_id,
+      a.id
+    );
+    return res.json(serializeActivity(db.prepare("SELECT * FROM activities WHERE id = ?").get(a.id)));
+  }
+
+  // kind === 'activity' — merge submitted fields over current values, then re-validate like POST
+  const next = {
+    note: "note" in req.body ? req.body.note.trim() : a.note,
+    activity_type_id: "activity_type_id" in req.body ? req.body.activity_type_id : a.activity_type_id,
+    activity_date: "activity_date" in req.body ? req.body.activity_date : (a.activity_date ?? "").slice(0, 10),
+    start_time: "start_time" in req.body ? req.body.start_time || null : a.start_time,
+    end_time: "end_time" in req.body ? req.body.end_time || null : a.end_time,
+  };
+  if (!next.activity_type_id) return res.status(400).json({ error: "Pick an activity type (call, visit, meeting…)" });
+  if (!next.activity_date || !/^\d{4}-\d{2}-\d{2}$/.test(next.activity_date))
+    return res.status(400).json({ error: "Activity date is required" });
+  const timeRe = /^\d{2}:\d{2}$/;
+  for (const [label, v] of [["Start time", next.start_time], ["End time", next.end_time]] as const)
+    if (v && !timeRe.test(v)) return res.status(400).json({ error: `${label} must be HH:MM` });
+  if (next.start_time && next.end_time && next.start_time >= next.end_time)
+    return res.status(400).json({ error: "End time must be after start time" });
+
+  const newLinks: number[] | null = "task_ids" in req.body
+    ? (Array.isArray(req.body.task_ids) ? req.body.task_ids.map(Number).filter(Boolean) : [])
+    : null;
+  for (const tid of newLinks ?? []) {
+    const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(tid) as any;
+    if (!t) return res.status(400).json({ error: `Linked task ${tid} not found` });
+    if (t.project_id !== a.project_id) return res.status(400).json({ error: "Linked tasks must belong to the same project" });
+  }
+
+  const update = db.transaction(() => {
+    db.prepare(
+      "UPDATE activities SET note = ?, activity_type_id = ?, activity_date = ?, start_time = ?, end_time = ? WHERE id = ?"
+    ).run(next.note, next.activity_type_id, `${next.activity_date} ${next.start_time ?? "00:00"}:00`, next.start_time, next.end_time, a.id);
+    if (newLinks) {
+      db.prepare("DELETE FROM task_activity_links WHERE activity_id = ?").run(a.id);
+      const link = db.prepare("INSERT OR IGNORE INTO task_activity_links (project_task_id, activity_id) VALUES (?, ?)");
+      for (const tid of newLinks) link.run(tid, a.id);
+    }
+  });
+  update();
+  res.json(serializeActivity(db.prepare("SELECT * FROM activities WHERE id = ?").get(a.id)));
+});

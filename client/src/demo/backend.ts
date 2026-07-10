@@ -776,6 +776,59 @@ route("POST", "/api/activities", (_m, _q, b) => {
   for (const tid of linkIds) db.task_activity_links.push({ id: nextId(), project_task_id: tid, activity_id: a.id });
   return ok(serializeActivity(a), 201);
 });
+/** Author-only in-place edit of a note or logged activity — port of PATCH /api/activities/:id. */
+route("PATCH", "/api/activities/:id", (m, _q, b) => {
+  const a = db.activities.find((x) => x.id === Number(m.id));
+  if (!a) return err(404, "Activity not found");
+  if (a.kind !== "note" && a.kind !== "activity")
+    return err(400, "Status changes and system entries can't be edited");
+  const editorId = Number(b.user_id);
+  if (!a.user_id || !editorId || a.user_id !== editorId) return err(403, "Only the author can edit this record");
+  const p = db.projects.find((x) => x.id === a.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its history is read-only");
+  if ("note" in b && !b.note?.trim()) return err(400, "Note text is required");
+
+  if (a.kind === "note") {
+    if ("note" in b) a.note = b.note.trim();
+    if ("category_id" in b) a.category_id = b.category_id ?? null;
+    return ok(serializeActivity(a));
+  }
+
+  // kind === 'activity' — merge submitted fields over current values, then re-validate like POST
+  const next = {
+    note: "note" in b ? b.note.trim() : a.note,
+    activity_type_id: "activity_type_id" in b ? b.activity_type_id : a.activity_type_id,
+    activity_date: "activity_date" in b ? b.activity_date : (a.activity_date ?? "").slice(0, 10),
+    start_time: "start_time" in b ? b.start_time || null : a.start_time,
+    end_time: "end_time" in b ? b.end_time || null : a.end_time,
+  };
+  if (!next.activity_type_id) return err(400, "Pick an activity type (call, visit, meeting…)");
+  if (!next.activity_date || !/^\d{4}-\d{2}-\d{2}$/.test(next.activity_date)) return err(400, "Activity date is required");
+  const timeRe = /^\d{2}:\d{2}$/;
+  for (const [label, v] of [["Start time", next.start_time], ["End time", next.end_time]] as const)
+    if (v && !timeRe.test(v)) return err(400, `${label} must be HH:MM`);
+  if (next.start_time && next.end_time && next.start_time >= next.end_time)
+    return err(400, "End time must be after start time");
+
+  const linkIds: number[] | null = "task_ids" in b
+    ? (Array.isArray(b.task_ids) ? b.task_ids.map(Number).filter(Boolean) : [])
+    : null;
+  for (const tid of linkIds ?? []) {
+    const t = db.project_tasks.find((x) => x.id === tid);
+    if (!t) return err(400, `Linked task ${tid} not found`);
+    if (t.project_id !== a.project_id) return err(400, "Linked tasks must belong to the same project");
+  }
+  a.note = next.note;
+  a.activity_type_id = next.activity_type_id;
+  a.start_time = next.start_time;
+  a.end_time = next.end_time;
+  a.activity_date = `${next.activity_date} ${next.start_time ?? "00:00"}:00`;
+  if (linkIds) {
+    db.task_activity_links = db.task_activity_links.filter((l) => l.activity_id !== a.id);
+    for (const tid of linkIds) db.task_activity_links.push({ id: nextId(), project_task_id: tid, activity_id: a.id });
+  }
+  return ok(serializeActivity(a));
+});
 
 // ---- wins (v2 §3) ----
 route("GET", "/api/wins", (_m, q) => {
