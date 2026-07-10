@@ -23,21 +23,18 @@ export function Layout() {
         className={`sticky top-0 flex h-screen shrink-0 flex-col border-r border-hairline bg-surface transition-[width] duration-200 ${collapsed ? "w-14" : "w-56"}`}
         aria-label="Primary"
       >
-        <div className="flex items-center gap-2.5 px-4 py-4">
-          {collapsed ? (
-            /* Compact placeholder mark until a dedicated small Accio asset exists:
-               the wordmark's "A" in a serif face on the brand maroon. */
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#7A1D22] font-serif text-lg font-semibold text-[#EFE9DD]" aria-label="Accio">A</span>
-          ) : (
-            <>
-              <img src={accioLogo} alt="Accio logo" className="h-9 w-12 shrink-0 rounded-lg object-cover" />
-              <div className="leading-tight">
-                <div className="text-sm font-semibold tracking-tight">Accio</div>
-                <div className="text-[11px] text-muted">Workflow tool</div>
-              </div>
-            </>
-          )}
-        </div>
+        {collapsed ? (
+          /* Compact placeholder mark until a dedicated small Accio asset exists:
+             the wordmark's "A" in a serif face on the brand maroon. */
+          <div className="flex justify-center py-4">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#7A1D22] font-serif text-lg font-semibold text-[#EFE9DD]" aria-label="Accio">A</span>
+          </div>
+        ) : (
+          <div className="pb-3">
+            <img src={accioLogo} alt="Accio" className="block h-auto w-full" />
+            <div className="mt-2 px-3 text-center text-[11px] text-muted">Summon clarity. Deliver results.</div>
+          </div>
+        )}
         <div className="flex-1 space-y-0.5 px-2 py-2">
           {NAV.map((n) => (
             <NavLink
