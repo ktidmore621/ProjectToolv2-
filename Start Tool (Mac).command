@@ -1,10 +1,10 @@
 #!/bin/bash
-# Double-click this file to start the Customer Assignment Tool.
+# Double-click this file to start Accio.
 # First run takes a minute or two (it downloads what it needs); after that it's fast.
 cd "$(dirname "$0")"
 
 echo "=============================================="
-echo "  Customer Assignment Tool"
+echo "  Accio"
 echo "=============================================="
 echo ""
 

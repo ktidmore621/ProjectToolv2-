@@ -1,10 +1,10 @@
 @echo off
-REM Double-click this file to start the Customer Assignment Tool.
+REM Double-click this file to start Accio.
 REM First run takes a minute or two (it downloads what it needs); after that it's fast.
 cd /d "%~dp0"
 
 echo ==============================================
-echo   Customer Assignment Tool
+echo   Accio
 echo ==============================================
 echo.
 

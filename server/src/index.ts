@@ -36,4 +36,4 @@ if (existsSync(clientDist)) {
 }
 
 const PORT = Number(process.env.PORT ?? 3001);
-app.listen(PORT, () => console.log(`Customer Assignment Tool API on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Accio API on http://localhost:${PORT}`));

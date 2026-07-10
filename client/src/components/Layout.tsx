@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { api, IS_DEMO, User } from "../api";
 import { useSession, useToast } from "../state";
+import accioLogo from "../assets/accio-logo.png";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: "▦", end: true },
@@ -23,12 +24,18 @@ export function Layout() {
         aria-label="Primary"
       >
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary font-mono text-sm font-semibold text-white">CA</span>
-          {!collapsed && (
-            <div className="leading-tight">
-              <div className="text-sm font-semibold tracking-tight">Customer Assignment</div>
-              <div className="text-[11px] text-muted">Workflow tool</div>
-            </div>
+          {collapsed ? (
+            /* Compact placeholder mark until a dedicated small Accio asset exists:
+               the wordmark's "A" in a serif face on the brand maroon. */
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#7A1D22] font-serif text-lg font-semibold text-[#EFE9DD]" aria-label="Accio">A</span>
+          ) : (
+            <>
+              <img src={accioLogo} alt="Accio logo" className="h-9 w-12 shrink-0 rounded-lg object-cover" />
+              <div className="leading-tight">
+                <div className="text-sm font-semibold tracking-tight">Accio</div>
+                <div className="text-[11px] text-muted">Workflow tool</div>
+              </div>
+            </>
           )}
         </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
