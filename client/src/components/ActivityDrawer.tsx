@@ -80,7 +80,7 @@ export function ActivityDrawer({ taskId, taskName, readOnly, onClose, onChanged 
                   )}
                   <span>{a.user_name}</span>
                 </div>
-                {a.note && <p className="mt-2 text-sm leading-snug">{a.note}</p>}
+                {a.note && <p className="mt-2 whitespace-pre-wrap text-sm leading-snug">{a.note}</p>}
                 <button
                   className="mt-2.5 text-xs font-medium text-accent hover:underline"
                   onClick={() => {

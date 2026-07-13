@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS projects (
   mcp_number TEXT NOT NULL,
   mcp_name TEXT NOT NULL,
   assignee_id INTEGER NOT NULL REFERENCES users(id),
+  annualized_premium REAL,                    -- Annualized Premium (AP) in dollars; required at creation
   assignment_date TEXT NOT NULL,
   target_date TEXT,
   template_id INTEGER NOT NULL REFERENCES workflow_templates(id),
@@ -182,6 +183,28 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Admin-defined project fields (no code change needed). Dropdown options live in
+-- the standard picklist system so option management reuses Picklists & Values.
+CREATE TABLE IF NOT EXISTS custom_fields (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  object_type TEXT NOT NULL DEFAULT 'project',
+  label TEXT NOT NULL,
+  field_key TEXT NOT NULL UNIQUE,             -- 'cf_' + slug, stable across renames
+  field_type TEXT NOT NULL,                   -- 'text' | 'number' | 'currency' | 'date' | 'dropdown' | 'checkbox'
+  picklist_id INTEGER REFERENCES picklists(id), -- dropdown only
+  is_active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_date TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS project_custom_values (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  field_id INTEGER NOT NULL REFERENCES custom_fields(id) ON DELETE CASCADE,
+  value TEXT,                                 -- canonical text: number/currency decimal, date ISO, checkbox '1'/'0', dropdown picklist_value id
+  UNIQUE(project_id, field_id)
+);
 `);
 
 // ---- v2 upgrade migrations (safe no-ops on fresh databases) ----
@@ -196,12 +219,14 @@ ensureColumn("activities", "end_time", "TEXT");
 ensureColumn("users", "dashboard_scope", "TEXT NOT NULL DEFAULT 'mine'");
 ensureColumn("users", "default_assignee_filter", "TEXT");
 ensureColumn("users", "show_configuration", "INTEGER NOT NULL DEFAULT 1");
+ensureColumn("projects", "annualized_premium", "REAL");
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_activities_task_date ON activities(project_task_id, activity_date);
 CREATE INDEX IF NOT EXISTS idx_task_activity_links_task ON task_activity_links(project_task_id);
 CREATE INDEX IF NOT EXISTS idx_task_activity_links_activity ON task_activity_links(activity_id);
 CREATE INDEX IF NOT EXISTS idx_wins_project ON wins(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_custom_values_project ON project_custom_values(project_id);
 `);
 
 /** Config a v1-seeded database is missing. Fresh installs get all of this from seed.ts. */
@@ -254,6 +279,25 @@ export function ensureV2Config() {
     .get();
   if (!hasLeader)
     db.prepare("INSERT INTO users (name, email, dashboard_scope) VALUES ('Leader', 'leader@example.com', 'all')").run();
+
+  // Annualized Premium (AP): system-required project field with a column/card/header slot on every surface
+  db.prepare(
+    `INSERT OR IGNORE INTO field_requirements (object_type, field_name, label, is_system, required, required_at)
+     VALUES ('project', 'annualized_premium', 'Annualized Premium (AP)', 1, 1, 'always')`
+  ).run();
+  for (const view of ["project_list", "portfolio_card", "project_header"]) {
+    const has = db
+      .prepare("SELECT id FROM view_layout_fields WHERE view_name = ? AND field_key = 'annualized_premium'")
+      .get(view);
+    if (!has) {
+      const max = db
+        .prepare("SELECT MAX(display_order) AS m FROM view_layout_fields WHERE view_name = ?")
+        .get(view) as { m: number | null };
+      db.prepare(
+        "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES (?, 'annualized_premium', 'AP', ?, 1, 0)"
+      ).run(view, (max.m ?? 0) + 1);
+    }
+  }
 }
 ensureV2Config();
 

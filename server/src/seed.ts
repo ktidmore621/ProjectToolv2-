@@ -11,6 +11,7 @@ const RESET = process.argv.includes("--reset");
 
 if (RESET) {
   db.exec(`
+    DELETE FROM project_custom_values; DELETE FROM custom_fields;
     DELETE FROM task_activity_links; DELETE FROM wins;
     DELETE FROM activities; DELETE FROM time_logs; DELETE FROM project_tasks;
     DELETE FROM projects; DELETE FROM template_tasks; DELETE FROM workflow_templates;
@@ -177,6 +178,7 @@ export function seed() {
   insFR.run("project", "mcp_number", "MCP #", 1, 1, "always");
   insFR.run("project", "mcp_name", "MCP Name", 1, 1, "always");
   insFR.run("project", "assignee_id", "Assignee", 1, 1, "always");
+  insFR.run("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   insFR.run("project", "assignment_date", "Assignment Date", 1, 1, "always");
   // Configurable
   insFR.run("project", "target_date", "Target Date", 0, 0, "creation");
@@ -198,6 +200,7 @@ export function seed() {
       ["rag", "RAG", 1, 1],
       ["project_code", "Project ID", 1, 0],
       ["assignee_name", "Assignee", 1, 0],
+      ["annualized_premium", "AP", 1, 0],
       ["days_in_status", "Days in Status", 1, 0],
       ["next_due_task", "Next Due Task", 1, 0],
       ["risk_label", "Risk Level", 0, 0],
@@ -216,6 +219,7 @@ export function seed() {
       ["mcp_number", "MCP #", 1, 0],
       ["mcp_name", "MCP Name", 1, 1],
       ["assignee_name", "Assignee", 1, 0],
+      ["annualized_premium", "AP", 1, 0],
       ["status_label", "Status", 1, 1],
       ["rag", "RAG", 1, 0],
       ["risk_label", "Risk", 1, 0],
@@ -241,6 +245,7 @@ export function seed() {
       ["status_label", "Status", 1, 1],
       ["rag", "RAG", 1, 1],
       ["assignee_name", "Assignee", 1, 0],
+      ["annualized_premium", "AP", 1, 0],
       ["assignment_date", "Assignment Date", 1, 0],
       ["target_date", "Target Date", 1, 0],
       ["risk_label", "Risk Level", 1, 0],
@@ -276,14 +281,15 @@ function seedDemo(users: number[], tplId: number) {
   const actType = (key: string) => valueByMapsTo("Time Log Activity Type", key)!.id;
 
   const insProject = db.prepare(
-    `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, assignment_date, target_date,
+    `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, annualized_premium, assignment_date, target_date,
        template_id, status_id, risk_level_id, status_changed_date, created_date, closed_date, closed_by, close_reason_id, final_summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   type Demo = {
     mcp: [string, string];
     assignee: number;
+    ap: number;
     assignedDaysAgo: number;
     status: string;
     risk: string;
@@ -294,19 +300,19 @@ function seedDemo(users: number[], tplId: number) {
     wins?: [description: string, categoryKey: string, occurredDaysAgo: number][];
   };
   const demos: Demo[] = [
-    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
+    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], ap: 128500, assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
       wins: [["Recovered $4,200 in misapplied charges found during the billing history review.", "cost_savings", 6]] },
-    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
+    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], ap: 64200, assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
       wins: [["Customer agreed to a monthly reconciliation cadence going forward.", "process_improvement", 4]] },
-    { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
-    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
+    { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], ap: 41750.5, assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
+    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], ap: 92300, assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
       wins: [["De-escalated the pending complaint; customer re-engaged with the action plan.", "escalation_resolved", 10]] },
-    { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], assignedDaysAgo: 3, status: "new", risk: "low" },
-    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
+    { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], ap: 23800, assignedDaysAgo: 3, status: "new", risk: "low" },
+    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], ap: 56400, assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
       wins: [["Corrected rate class saves the co-op roughly $700/month going forward.", "cost_savings", 8]] },
-    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
+    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], ap: 87950, assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
       wins: [["Rebuilt trust with the fleet manager after the disputed invoices were credited.", "relationship_recovery", 20], ["Meter remapping cut disputed line items by 12%.", "cost_savings", 16]] },
-    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
+    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], ap: 18200, assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
       wins: [["Consolidated duplicate accounts into a single clean billing record.", "process_improvement", 35]] },
   ];
 
@@ -321,6 +327,7 @@ function seedDemo(users: number[], tplId: number) {
       d.mcp[0],
       d.mcp[1],
       d.assignee,
+      d.ap,
       assigned,
       d.target != null ? iso(-d.target) : null,
       tplId,
@@ -334,7 +341,7 @@ function seedDemo(users: number[], tplId: number) {
       isClosed ? d.closed!.summary : null
     ).lastInsertRowid as number;
 
-    generateTasksFromTemplate(pid, tplId, assigned);
+    generateTasksFromTemplate(pid, tplId, assigned, d.assignee);
     logActivity({ project_id: pid, user_id: d.assignee, kind: "system", note: `Project ${code} created for ${d.mcp[1]}` });
 
     const tasks = db

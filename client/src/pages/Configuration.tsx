@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { api, LayoutField, Picklist, PickValue, Project, Task, User } from "../api";
+import { api, CustomField, CustomFieldType, LayoutField, Picklist, PickValue, Project, Task, User } from "../api";
 import { renderProjectField, renderTaskField } from "../components/fields";
 import { Page } from "../components/Layout";
 import { Btn, Card, Chip, Field, inputCls, Modal, Mono, ragEdge, Skeleton } from "../components/ui";
@@ -11,6 +11,7 @@ const TABS = [
   { to: "picklists", label: "Picklists & Values" },
   { to: "templates", label: "Workflow Templates" },
   { to: "fields", label: "Field Requirements" },
+  { to: "custom-fields", label: "Custom Fields" },
   { to: "layouts", label: "Card & View Layouts" },
 ];
 
@@ -38,6 +39,7 @@ export function Configuration() {
         <Route path="picklists" element={<Picklists />} />
         <Route path="templates" element={<Templates />} />
         <Route path="fields" element={<FieldRequirements />} />
+        <Route path="custom-fields" element={<CustomFields />} />
         <Route path="layouts" element={<Layouts />} />
         <Route path="*" element={<Navigate to="working-as" replace />} />
       </Routes>
@@ -560,11 +562,132 @@ function FieldRequirements() {
   );
 }
 
+// ================= Custom Fields (dynamic project fields) =================
+
+const FIELD_TYPES: { key: CustomFieldType; label: string; hint: string }[] = [
+  { key: "text", label: "Text", hint: "Free text" },
+  { key: "number", label: "Number", hint: "Numeric value" },
+  { key: "currency", label: "Currency", hint: "Dollar amount, shown as $0,000.00" },
+  { key: "date", label: "Date", hint: "Calendar date" },
+  { key: "dropdown", label: "Dropdown", hint: "Pick one from a managed option list" },
+  { key: "checkbox", label: "Checkbox", hint: "Yes / No" },
+];
+
+/**
+ * Admin-defined project fields. A new field immediately shows up on the
+ * create/edit forms, the project detail header, list/Kanban layouts and
+ * imports/exports — no code change. Dropdown options are a normal picklist
+ * (editable under Picklists & Values); requiredness lives in Field
+ * Requirements; per-view visibility in Card & View Layouts.
+ */
+function CustomFields() {
+  const toast = useToast();
+  const { refreshPicklists } = useConfig();
+  const [fields, setFields] = useState<CustomField[] | null>(null);
+  const [form, setForm] = useState({ label: "", field_type: "text" as CustomFieldType, options: "" });
+
+  const load = useCallback(() => { api.get<CustomField[]>("/api/custom-fields").then(setFields); }, []);
+  useEffect(load, [load]);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    try {
+      await api.post("/api/custom-fields", {
+        label: form.label,
+        field_type: form.field_type,
+        options: form.field_type === "dropdown" ? form.options.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+      });
+      toast(`Added field "${form.label}" — it now appears on project forms, views and imports/exports.`, "success");
+      setForm({ label: "", field_type: "text", options: "" });
+      load();
+      refreshPicklists(); // dropdown fields add a picklist
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  async function patch(f: CustomField, body: Record<string, unknown>) {
+    try {
+      await api.patch(`/api/custom-fields/${f.id}`, body);
+      load();
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  async function remove(f: CustomField) {
+    try {
+      const r = await api.del(`/api/custom-fields/${f.id}`);
+      toast(r.deactivated ? r.message : `Deleted "${f.label}".`, r.deactivated ? "warning" : "success");
+      load();
+      refreshPicklists();
+    } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
+  }
+
+  if (!fields) return <Skeleton className="h-72" />;
+  const typeLabel = (t: string) => FIELD_TYPES.find((x) => x.key === t)?.label ?? t;
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+      <Card className="p-4">
+        <h3 className="mb-1 text-sm font-semibold">Project fields</h3>
+        <p className="mb-3 text-xs text-muted">
+          New fields appear automatically on the create/edit forms, project details, list and Kanban layouts,
+          reporting exports and CSV import. Dropdown options are managed under <b>Picklists & Values</b>;
+          make a field required under <b>Field Requirements</b>; show/hide it per view under <b>Card & View Layouts</b>.
+        </p>
+        {fields.length === 0 && <p className="py-6 text-center text-sm text-muted">No custom fields yet.</p>}
+        <ul className="divide-y divide-hairline">
+          {fields.map((f) => (
+            <li key={f.id} className={`flex flex-wrap items-center gap-2 py-2 text-sm ${f.is_active ? "" : "opacity-50"}`}>
+              <input
+                className="w-52 rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium hover:border-hairline focus:border-accent focus:outline-none"
+                defaultValue={f.label}
+                onBlur={(e) => e.target.value.trim() && e.target.value !== f.label && patch(f, { label: e.target.value })}
+                aria-label={`Rename ${f.label}`}
+              />
+              <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted">{typeLabel(f.field_type)}</span>
+              {f.field_type === "dropdown" && (
+                <span className="text-xs text-muted">{f.options.filter((o) => o.is_active).map((o) => o.label).join(" · ")}</span>
+              )}
+              <span className="ml-auto flex items-center gap-1.5">
+                {f.is_active ? (
+                  <Btn small kind="ghost" onClick={() => patch(f, { is_active: false })}>Deactivate</Btn>
+                ) : (
+                  <Btn small kind="ghost" onClick={() => patch(f, { is_active: true })}>Reactivate</Btn>
+                )}
+                <Btn small kind="danger" onClick={() => remove(f)}>Delete</Btn>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      <Card className="h-fit p-4">
+        <h3 className="mb-3 text-sm font-semibold">Add a field</h3>
+        <form onSubmit={add} className="space-y-3">
+          <Field label="Field label"><input className={inputCls} required value={form.label}
+            onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Region" /></Field>
+          <Field label="Type" hint={FIELD_TYPES.find((t) => t.key === form.field_type)?.hint}>
+            <select className={inputCls} value={form.field_type}
+              onChange={(e) => setForm({ ...form, field_type: e.target.value as CustomFieldType })}>
+              {FIELD_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+          </Field>
+          {form.field_type === "dropdown" && (
+            <Field label="Options (comma-separated)" hint="Becomes a picklist you can recolor/reorder later.">
+              <input className={inputCls} required value={form.options}
+                onChange={(e) => setForm({ ...form, options: e.target.value })} placeholder="e.g. North, South, East, West" />
+            </Field>
+          )}
+          <Btn kind="primary" type="submit">Add field</Btn>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
 // ================= Card & View Layouts (§5.4) =================
 
 const SAMPLE_PROJECT: Project = {
   id: 0, project_code: "CAP-0042", mcp_number: "MCP-9876", mcp_name: "Sample Customer Co.",
-  assignee_id: 0, assignee_name: "Morgan Hale", assignment_date: "2026-06-15", target_date: "2026-08-01",
+  assignee_id: 0, assignee_name: "Morgan Hale", annualized_premium: 12500, assignment_date: "2026-06-15", target_date: "2026-08-01",
   template_id: 0, status_id: 0, status_label: "In Progress", status_color: "#12808A", status_key: "in_progress",
   risk_level_id: 0, risk_label: "High", risk_color: "#B0632F",
   rag: "amber", rag_reason: "Task due within 3d", rag_overridden: false, rag_color: "#C99239", rag_label: "Amber",

@@ -22,12 +22,14 @@ export interface DemoDB {
   wins: Row[];
   field_requirements: Row[];
   view_layout_fields: Row[];
+  custom_fields: Row[];
+  project_custom_values: Row[];
   settings: Record<string, string>;
   seq: number;
 }
 
-// v2 bump: adds wins + task_activity_links; older stored v1 data reseeds fresh
-const STORE_KEY = "cat_demo_db_v2";
+// v3 bump: adds annualized_premium + custom fields; older stored data reseeds fresh
+const STORE_KEY = "cat_demo_db_v3";
 
 export let db: DemoDB = emptyDb();
 {
@@ -86,7 +88,8 @@ function emptyDb(): DemoDB {
   return {
     users: [], picklists: [], picklist_values: [], workflow_templates: [], template_tasks: [],
     projects: [], project_tasks: [], time_logs: [], activities: [], task_activity_links: [], wins: [],
-    field_requirements: [], view_layout_fields: [], settings: {}, seq: 0,
+    field_requirements: [], view_layout_fields: [], custom_fields: [], project_custom_values: [],
+    settings: {}, seq: 0,
   };
 }
 
@@ -138,8 +141,11 @@ function addDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Snapshot the template into project tasks (conditional tasks hidden until the decision). */
-export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string) {
+/**
+ * Snapshot the template into project tasks (conditional tasks hidden until the
+ * decision). Every generated task starts assigned to the project assignee.
+ */
+export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string, assigneeId: number | null = null) {
   const notStarted = valueByMapsTo("Task Status", "not_started")!;
   const tasks = db.template_tasks
     .filter((t) => t.template_id === templateId)
@@ -154,7 +160,7 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
       description: t.description ?? "",
       task_type: conditional ? "action_plan" : "standard",
       step_order: t.step_order,
-      assigned_to: null,
+      assigned_to: assigneeId,
       due_date: conditional ? null : addDays(assignmentDate, t.due_offset),
       status_id: notStarted.id,
       priority_id: t.default_priority_id ?? null,
@@ -283,6 +289,7 @@ function freshDb(): void {
   fr("project", "mcp_number", "MCP #", 1, 1, "always");
   fr("project", "mcp_name", "MCP Name", 1, 1, "always");
   fr("project", "assignee_id", "Assignee", 1, 1, "always");
+  fr("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   fr("project", "assignment_date", "Assignment Date", 1, 1, "always");
   fr("project", "target_date", "Target Date", 0, 0, "creation");
   fr("project", "risk_level_id", "Risk Level", 0, 0, "creation");
@@ -295,7 +302,7 @@ function freshDb(): void {
   const layouts: Record<string, [string, string, number, number][]> = {
     portfolio_card: [
       ["mcp_name", "MCP Name", 1, 1], ["rag", "RAG", 1, 1], ["project_code", "Project ID", 1, 0],
-      ["assignee_name", "Assignee", 1, 0], ["days_in_status", "Days in Status", 1, 0],
+      ["assignee_name", "Assignee", 1, 0], ["annualized_premium", "AP", 1, 0], ["days_in_status", "Days in Status", 1, 0],
       ["next_due_task", "Next Due Task", 1, 0], ["risk_label", "Risk Level", 0, 0], ["mcp_number", "MCP #", 0, 0],
     ],
     task_card: [
@@ -304,7 +311,7 @@ function freshDb(): void {
     ],
     project_list: [
       ["project_code", "Project ID", 1, 1], ["mcp_number", "MCP #", 1, 0], ["mcp_name", "MCP Name", 1, 1],
-      ["assignee_name", "Assignee", 1, 0], ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 0],
+      ["assignee_name", "Assignee", 1, 0], ["annualized_premium", "AP", 1, 0], ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 0],
       ["risk_label", "Risk", 1, 0], ["assignment_date", "Assigned", 1, 0],
       ["days_in_status", "Days in Status", 0, 0], ["open_task_count", "Open Tasks", 1, 0],
     ],
@@ -317,7 +324,8 @@ function freshDb(): void {
     project_header: [
       ["mcp_name", "MCP Name", 1, 1], ["mcp_number", "MCP #", 1, 1], ["project_code", "Project ID", 1, 1],
       ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 1], ["assignee_name", "Assignee", 1, 0],
-      ["assignment_date", "Assignment Date", 1, 0], ["target_date", "Target Date", 1, 0], ["risk_label", "Risk Level", 1, 0],
+      ["annualized_premium", "AP", 1, 0], ["assignment_date", "Assignment Date", 1, 0], ["target_date", "Target Date", 1, 0],
+      ["risk_label", "Risk Level", 1, 0],
     ],
   };
   for (const [view, fields] of Object.entries(layouts)) {
@@ -341,25 +349,25 @@ function seedDemoProjects(users: number[], tplId: number) {
   const actType = (key: string) => valueByMapsTo("Time Log Activity Type", key)!.id;
 
   type Demo = {
-    mcp: [string, string]; assignee: number; assignedDaysAgo: number; status: string; risk: string;
+    mcp: [string, string]; assignee: number; ap: number; assignedDaysAgo: number; status: string; risk: string;
     closed?: { daysAgo: number; reason: string; summary: string };
     completeThrough?: number; blockTask?: number;
     wins?: [string, string, number][];
   };
   const demos: Demo[] = [
-    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
+    { mcp: ["MCP-1042", "Harborview Medical Group"], assignee: users[0], ap: 128500, assignedDaysAgo: 21, status: "in_progress", risk: "high", completeThrough: 2, blockTask: 3,
       wins: [["Recovered $4,200 in misapplied charges found during the billing history review.", "cost_savings", 6]] },
-    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
+    { mcp: ["MCP-2088", "Cedar Ridge Utilities"], assignee: users[1], ap: 64200, assignedDaysAgo: 12, status: "in_progress", risk: "medium", completeThrough: 2,
       wins: [["Customer agreed to a monthly reconciliation cadence going forward.", "process_improvement", 4]] },
-    { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
-    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
+    { mcp: ["MCP-3110", "Lakeside Logistics"], assignee: users[0], ap: 41750.5, assignedDaysAgo: 5, status: "assigned", risk: "low", completeThrough: 0 },
+    { mcp: ["MCP-1544", "Summit Dental Partners"], assignee: users[2], ap: 92300, assignedDaysAgo: 30, status: "action_plan_in_progress", risk: "critical", completeThrough: 5,
       wins: [["De-escalated the pending complaint; customer re-engaged with the action plan.", "escalation_resolved", 10]] },
-    { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], assignedDaysAgo: 3, status: "new", risk: "low" },
-    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
+    { mcp: ["MCP-4021", "Birchwood Manufacturing"], assignee: users[3], ap: 23800, assignedDaysAgo: 3, status: "new", risk: "low" },
+    { mcp: ["MCP-2760", "Fairfield Grocers Co-op"], assignee: users[1], ap: 56400, assignedDaysAgo: 40, status: "ready_to_close", risk: "medium", completeThrough: 8,
       wins: [["Corrected rate class saves the co-op roughly $700/month going forward.", "cost_savings", 8]] },
-    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
+    { mcp: ["MCP-0917", "Northgate Auto Group"], assignee: users[2], ap: 87950, assignedDaysAgo: 75, status: "closed", risk: "medium", completeThrough: 9, closed: { daysAgo: 14, reason: "billing_improved", summary: "Corrected meter mapping and renegotiated billing cycle; customer now on accurate monthly invoicing with a 12% reduction in disputes." },
       wins: [["Rebuilt trust with the fleet manager after the disputed invoices were credited.", "relationship_recovery", 20], ["Meter remapping cut disputed line items by 12%.", "cost_savings", 16]] },
-    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
+    { mcp: ["MCP-1203", "Elm Street Bakery"], assignee: users[0], ap: 18200, assignedDaysAgo: 90, status: "closed", risk: "low", completeThrough: 9, closed: { daysAgo: 30, reason: "issue_resolved", summary: "Duplicate account consolidation completed; billing disputes resolved and no further action required." },
       wins: [["Consolidated duplicate accounts into a single clean billing record.", "process_improvement", 35]] },
   ];
 
@@ -372,7 +380,7 @@ function seedDemoProjects(users: number[], tplId: number) {
     const pid = nextId();
     db.projects.push({
       id: pid, project_code: code, mcp_number: d.mcp[0], mcp_name: d.mcp[1],
-      assignee_id: d.assignee, assignment_date: assigned, target_date: null,
+      assignee_id: d.assignee, annualized_premium: d.ap, assignment_date: assigned, target_date: null,
       template_id: tplId, status_id: status(d.status), risk_level_id: risk(d.risk),
       rag_override: null, rag_override_reason: null,
       status_changed_date: iso(Math.min(d.assignedDaysAgo, isClosed ? d.closed!.daysAgo : Math.ceil(d.assignedDaysAgo / 3))) + " 09:00:00",
@@ -383,7 +391,7 @@ function seedDemoProjects(users: number[], tplId: number) {
       final_summary: isClosed ? d.closed!.summary : null,
     });
 
-    generateTasksFromTemplate(pid, tplId, assigned);
+    generateTasksFromTemplate(pid, tplId, assigned, d.assignee);
     logActivity({ project_id: pid, user_id: d.assignee, kind: "system", note: `Project ${code} created for ${d.mcp[1]}` });
 
     const completeN = d.completeThrough ?? 0;

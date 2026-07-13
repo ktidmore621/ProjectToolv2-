@@ -152,8 +152,8 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
         <div className="flex flex-col">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Notes · {notes?.length ?? 0}</h3>
           {!readOnly && (
-            <form onSubmit={addNote} className="mb-3 flex gap-2">
-              <input className={inputCls} placeholder="Add a note to this task…" value={note}
+            <form onSubmit={addNote} className="mb-3 flex items-end gap-2">
+              <textarea className={inputCls + " min-h-16 flex-1"} placeholder="Add a note to this task…" value={note}
                 onChange={(e) => setNote(e.target.value)} aria-label="New task note" />
               <Btn kind="primary" type="submit" disabled={!note.trim()}>Add</Btn>
             </form>
@@ -163,7 +163,7 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged }: {
             {visibleNotes.map((n, i) => (
               <li key={n.id} className={`rounded-lg border p-3 ${i === 0 ? "border-accent/40 bg-accent-soft/40" : "border-hairline"}`}>
                 {i === 0 && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-accent">Latest</div>}
-                <p className="text-sm leading-snug">{n.note}</p>
+                <p className="whitespace-pre-wrap text-sm leading-snug">{n.note}</p>
                 <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted">
                   <span>
                     {n.user_name} · <Mono>{n.activity_date?.slice(0, 16).replace("T", " ")}</Mono>

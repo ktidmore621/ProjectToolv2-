@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Activity, api, ApiError, fmtDate, fmtHours, fmtTime, Project, Task, todayIso, Win } from "../api";
 import { ActivityDrawer } from "../components/ActivityDrawer";
 import { canEditActivity, EditActivityButton, EditActivityModal } from "../components/EditActivityModal";
-import { renderProjectField, renderTaskField, useLayout } from "../components/fields";
+import { CustomFieldInputs, renderProjectField, renderTaskField, useCustomFields, useLayout } from "../components/fields";
 import { ActivityTypeIcon, TrophyIcon } from "../components/icons";
 import { Page } from "../components/Layout";
 import { TaskKanban } from "../components/TaskKanban";
@@ -24,6 +24,7 @@ export function ProjectDetail() {
   const [project, setProject] = useState<Project | null>(null);
   const [tab, setTab] = useState<Tab>("tasks");
   const [taskView, setTaskView] = useState<"list" | "kanban">("list");
+  const [showEdit, setShowEdit] = useState(false);
   const [showClose, setShowClose] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showRag, setShowRag] = useState(false);
@@ -82,6 +83,7 @@ export function ProjectDetail() {
       actions={
         !readOnly && (
           <>
+            <Btn onClick={() => setShowEdit(true)}>Edit project</Btn>
             <Btn onClick={() => setShowRag(true)}>RAG override</Btn>
             <StatusSelect project={project} onChanged={load} />
             <Btn kind="primary" onClick={() => setShowClose(true)}>Close project</Btn>
@@ -221,6 +223,7 @@ export function ProjectDetail() {
         <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} readOnly={readOnly}
           onClose={() => setDrawerTask(null)} onChanged={load} />
       )}
+      {showEdit && <EditProjectModal project={project} onClose={() => setShowEdit(false)} onSaved={load} />}
       {showClose && <CloseModal project={project} onClose={() => setShowClose(false)} onClosed={load} />}
       {showAddTask && <AddTaskModal project={project} users={users} onClose={() => setShowAddTask(false)} onAdded={load} />}
       {showRag && <RagModal project={project} onClose={() => setShowRag(false)} onSaved={load} />}
@@ -270,6 +273,115 @@ function StatusSelect({ project, onChanged }: { project: Project; onChanged: () 
         <option key={v.id} value={v.id}>{v.label}</option>
       ))}
     </select>
+  );
+}
+
+/**
+ * Post-creation project edits — MCP name, assignee, AP, dates, risk and every
+ * custom field. Changing the assignee asks whether open tasks should follow;
+ * Closed/Complete tasks are never touched either way.
+ */
+function EditProjectModal({ project, onClose, onSaved }: { project: Project; onClose: () => void; onSaved: () => void }) {
+  const { users, currentUser } = useSession();
+  const { activeValues } = useConfig();
+  const customFields = useCustomFields();
+  const toast = useToast();
+  const [form, setForm] = useState({
+    mcp_name: project.mcp_name,
+    assignee_id: String(project.assignee_id),
+    annualized_premium: project.annualized_premium != null ? String(project.annualized_premium) : "",
+    target_date: project.target_date ?? "",
+    risk_level_id: project.risk_level_id ? String(project.risk_level_id) : "",
+  });
+  const [custom, setCustom] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.entries(project.custom ?? {}).map(([k, v]) => [k, v.value ?? ""]))
+  );
+  const [confirmReassign, setConfirmReassign] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const newAssignee = users.find((u) => u.id === Number(form.assignee_id));
+  const assigneeChanged = Number(form.assignee_id) !== project.assignee_id;
+
+  async function save(reassignOpenTasks: boolean) {
+    setBusy(true); setError("");
+    try {
+      await api.patch(`/api/projects/${project.id}`, {
+        mcp_name: form.mcp_name,
+        assignee_id: Number(form.assignee_id),
+        annualized_premium: Number(form.annualized_premium),
+        target_date: form.target_date || null,
+        risk_level_id: form.risk_level_id ? Number(form.risk_level_id) : null,
+        custom,
+        user_id: currentUser?.id,
+        reassign_open_tasks: reassignOpenTasks,
+      });
+      toast(
+        assigneeChanged && reassignOpenTasks
+          ? `Project updated — open tasks reassigned to ${newAssignee?.name}.`
+          : "Project updated.",
+        "success"
+      );
+      onSaved(); onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update failed");
+      setConfirmReassign(false);
+    } finally { setBusy(false); }
+  }
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (assigneeChanged) setConfirmReassign(true); // ask about the task cascade first
+    else save(false);
+  }
+
+  return (
+    // While the nested confirm dialog is open, Escape/backdrop should close it alone
+    <Modal title={`Edit ${project.project_code} — ${project.mcp_name}`} onClose={() => !confirmReassign && onClose()} wide>
+      <form onSubmit={submit} className="grid grid-cols-2 gap-4">
+        <Field label="MCP Name"><input className={inputCls} required value={form.mcp_name} onChange={(e) => setForm({ ...form, mcp_name: e.target.value })} /></Field>
+        <Field label="Assignee">
+          <select className={inputCls} required value={form.assignee_id} onChange={(e) => setForm({ ...form, assignee_id: e.target.value })}>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Annualized Premium (AP)">
+          <input type="number" min="0" step="0.01" className={inputCls} required value={form.annualized_premium}
+            onChange={(e) => setForm({ ...form, annualized_premium: e.target.value })} placeholder="e.g. 12500.00" />
+        </Field>
+        <Field label="Target date">
+          <input type="date" className={inputCls} value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} />
+        </Field>
+        <Field label="Risk level">
+          <select className={inputCls} value={form.risk_level_id} onChange={(e) => setForm({ ...form, risk_level_id: e.target.value })}>
+            <option value="">—</option>
+            {activeValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
+        </Field>
+        <CustomFieldInputs fields={customFields} values={custom} onChange={(k, v) => setCustom((c) => ({ ...c, [k]: v }))} />
+        {error && <p className="col-span-2 text-sm text-rag-red">{error}</p>}
+        <div className="col-span-2 flex justify-end gap-2">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save changes"}</Btn>
+        </div>
+      </form>
+      {confirmReassign && (
+        <Modal title="Update task assignments?" onClose={() => setConfirmReassign(false)}>
+          <p className="mb-2 text-sm">
+            Would you like to update all project tasks to this same assignee?
+          </p>
+          <p className="mb-4 text-xs text-muted">
+            <b>Yes</b> reassigns every open task to {newAssignee?.name}. Closed/Complete tasks are historical records and are never changed.
+            <b> No</b> changes only the project assignee and leaves task assignments as they are.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Btn onClick={() => setConfirmReassign(false)} disabled={busy}>Cancel</Btn>
+            <Btn onClick={() => save(false)} disabled={busy}>No — just the project</Btn>
+            <Btn kind="primary" onClick={() => save(true)} disabled={busy}>Yes — update open tasks</Btn>
+          </div>
+        </Modal>
+      )}
+    </Modal>
   );
 }
 
@@ -676,7 +788,7 @@ function NotesTab({ project, readOnly, kind, highlightId, onHighlighted, onChang
                   {a.kind === "status_change" && <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide">status</span>}
                   {a.task_name && <span>· {a.task_name}</span>}
                 </div>
-                <p className="mt-0.5 text-sm">{a.note}</p>
+                <p className="mt-0.5 whitespace-pre-wrap text-sm">{a.note}</p>
                 {a.linked_tasks.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
                     <span>Linked tasks:</span>

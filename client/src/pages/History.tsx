@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtDate, Project } from "../api";
+import { api, fmtCurrency, fmtDate, Project } from "../api";
 import { Page } from "../components/Layout";
 import { Card, Chip, CsvLink, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
 
@@ -41,7 +41,7 @@ export function History() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-hairline text-left">
-                {["Project ID", "MCP #", "MCP Name", "Assignee", "Assigned", "Closed", "Closed By", "Reason", "Final Summary"].map((h) => (
+                {["Project ID", "MCP #", "MCP Name", "Assignee", "AP", "Assigned", "Closed", "Closed By", "Reason", "Final Summary"].map((h) => (
                   <th key={h} className="px-3 py-2.5 text-xs font-semibold text-muted">{h}</th>
                 ))}
               </tr>
@@ -53,6 +53,7 @@ export function History() {
                   <td className="px-3 py-2"><Mono className="text-muted">{p.mcp_number}</Mono></td>
                   <td className="px-3 py-2 font-medium">{p.mcp_name}</td>
                   <td className="px-3 py-2">{p.assignee_name}</td>
+                  <td className="px-3 py-2"><Mono>{p.annualized_premium != null ? fmtCurrency(p.annualized_premium) : "—"}</Mono></td>
                   <td className="px-3 py-2"><Mono>{fmtDate(p.assignment_date)}</Mono></td>
                   <td className="px-3 py-2"><Mono>{fmtDate(p.closed_date)}</Mono></td>
                   <td className="px-3 py-2">{p.closed_by_name ?? "—"}</td>
