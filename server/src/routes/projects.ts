@@ -2,8 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import {
-  CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, generateTasksFromTemplate, isClosedStatus,
-  logActivity, nextProjectCode, serializeActivity, serializeProject, serializeTask, valueById, valueByMapsTo, valuesFor,
+  CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
+  logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
+  validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -56,10 +57,12 @@ const createSchema = z.object({
   mcp_number: z.string().min(1),
   mcp_name: z.string().min(1),
   assignee_id: z.number(),
+  annualized_premium: z.number({ required_error: "Annualized Premium (AP) is required", invalid_type_error: "Annualized Premium (AP) must be a dollar amount" }).nonnegative("Annualized Premium (AP) must be a dollar amount"),
   assignment_date: z.string().min(1),
   target_date: z.string().nullish(),
   risk_level_id: z.number().nullish(),
   template_id: z.number(),
+  custom: z.record(z.any()).nullish(), // { field_key: raw value } for admin-defined fields
   user_id: z.number(), // acting user
 });
 
@@ -68,7 +71,10 @@ projects.post("/", (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const b = parsed.data;
 
-  const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, project_code: "auto" });
+  const custom = validateCustomValues(b.custom);
+  if (custom.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
+
+  const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
   if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
 
   // One active project per MCP (§2.3) — enforced server-side
@@ -87,12 +93,13 @@ projects.post("/", (req, res) => {
     const code = nextProjectCode();
     const pid = db
       .prepare(
-        `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, assignment_date, target_date, template_id, status_id, risk_level_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, annualized_premium, assignment_date, target_date, template_id, status_id, risk_level_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(code, b.mcp_number, b.mcp_name, b.assignee_id, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
+      .run(code, b.mcp_number, b.mcp_name, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
       .lastInsertRowid as number;
-    generateTasksFromTemplate(pid, b.template_id, b.assignment_date);
+    saveCustomValues(pid, custom.parsed);
+    generateTasksFromTemplate(pid, b.template_id, b.assignment_date, b.assignee_id);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
     return pid;
   });
@@ -104,8 +111,18 @@ projects.patch("/:id", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+  const userId = req.body.user_id ?? null;
 
-  const allowed = ["mcp_name", "assignee_id", "target_date", "risk_level_id"] as const;
+  if ("annualized_premium" in req.body) {
+    const n = Number(req.body.annualized_premium);
+    if (!Number.isFinite(n) || n < 0)
+      return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
+    req.body.annualized_premium = n;
+  }
+  const custom = "custom" in req.body ? validateCustomValues(req.body.custom) : null;
+  if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
+
+  const allowed = ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
   const sets: string[] = [];
   const vals: any[] = [];
   for (const f of allowed) {
@@ -113,6 +130,40 @@ projects.patch("/:id", (req, res) => {
   }
   if (sets.length) {
     db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, p.id);
+  }
+  if (custom) saveCustomValues(p.id, custom.parsed);
+
+  // Audit-log the changes that matter to the project history
+  if ("annualized_premium" in req.body && Number(req.body.annualized_premium) !== p.annualized_premium) {
+    logActivity({
+      project_id: p.id, user_id: userId, kind: "system",
+      note: `changed Annualized Premium (AP) from ${fmtCurrency(p.annualized_premium) || "—"} to ${fmtCurrency(Number(req.body.annualized_premium))}`,
+    });
+  }
+  const newAssignee = "assignee_id" in req.body ? Number(req.body.assignee_id) : null;
+  if (newAssignee && newAssignee !== p.assignee_id) {
+    const nameOf = (id: number) => (db.prepare("SELECT name FROM users WHERE id = ?").get(id) as { name: string } | undefined)?.name ?? "—";
+    logActivity({
+      project_id: p.id, user_id: userId, kind: "system",
+      note: `changed project assignee from ${nameOf(p.assignee_id)} to ${nameOf(newAssignee)}`,
+    });
+    // Optional cascade: reassign only open tasks — Closed/Complete (and other done)
+    // tasks are historical records and are never modified.
+    if (req.body.reassign_open_tasks) {
+      const doneIds = valuesFor("Task Status")
+        .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
+        .map((v) => v.id);
+      const r = db
+        .prepare(
+          `UPDATE project_tasks SET assigned_to = ?
+           WHERE project_id = ? AND status_id NOT IN (${doneIds.map(() => "?").join(",")})`
+        )
+        .run(newAssignee, p.id, ...doneIds);
+      logActivity({
+        project_id: p.id, user_id: userId, kind: "system",
+        note: `reassigned ${r.changes} open task(s) to ${nameOf(newAssignee)}`,
+      });
+    }
   }
   res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id), { withTasks: true }));
 });

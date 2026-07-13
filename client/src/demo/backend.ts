@@ -132,8 +132,104 @@ function serializeWin(w: Row): Row {
     project_code: p?.project_code ?? null,
     mcp_name: p?.mcp_name ?? null,
     mcp_number: p?.mcp_number ?? null,
+    annualized_premium: p?.annualized_premium ?? null,
     logged_by_name: userName(w.logged_by) ?? null,
   };
+}
+
+// ---------------- AP + dynamic custom fields (port of core.ts) ----------------
+
+function fmtCurrency(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(Number(n))) return "";
+  return Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function parseCurrency(raw: unknown): number | null {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  return Number(String(raw).replace(/[$,\s]/g, ""));
+}
+
+const activeCustomFields = () =>
+  db.custom_fields
+    .filter((f) => f.object_type === "project" && f.is_active)
+    .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+
+function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return { ok: true, value: null };
+  const s = String(raw).trim();
+  switch (field.field_type) {
+    case "text":
+      return { ok: true, value: s };
+    case "number": {
+      const n = Number(s.replace(/,/g, ""));
+      if (!Number.isFinite(n)) return { ok: false, error: `${field.label} must be a number` };
+      return { ok: true, value: String(n) };
+    }
+    case "currency": {
+      const n = parseCurrency(s);
+      if (n == null || !Number.isFinite(n) || n < 0) return { ok: false, error: `${field.label} must be a dollar amount` };
+      return { ok: true, value: n.toFixed(2) };
+    }
+    case "date": {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return { ok: false, error: `${field.label} must be YYYY-MM-DD` };
+      return { ok: true, value: s };
+    }
+    case "checkbox": {
+      if (raw === true || ["1", "true", "yes", "y", "x"].includes(s.toLowerCase())) return { ok: true, value: "1" };
+      if (raw === false || ["0", "false", "no", "n"].includes(s.toLowerCase())) return { ok: true, value: "0" };
+      return { ok: false, error: `${field.label} must be Yes or No` };
+    }
+    case "dropdown": {
+      const opts = db.picklist_values.filter((v) => v.picklist_id === field.picklist_id);
+      const match = opts.find((v) => String(v.id) === s) ?? opts.find((v) => v.label.toLowerCase() === s.toLowerCase());
+      if (!match) return { ok: false, error: `${field.label}: unknown option "${s}"` };
+      return { ok: true, value: String(match.id) };
+    }
+    default:
+      return { ok: false, error: `${field.label} has an unsupported type` };
+  }
+}
+
+function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined) {
+  const errors: string[] = [];
+  const parsed = new Map<number, string | null>();
+  const flat: Record<string, string | null> = {};
+  for (const f of activeCustomFields()) {
+    const r = parseCustomValue(f, bodyCustom?.[f.field_key]);
+    if (r.ok) {
+      parsed.set(f.id, r.value);
+      flat[f.field_key] = r.value;
+    } else errors.push(r.error);
+  }
+  return { errors, parsed, flat };
+}
+
+function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
+  for (const [fieldId, value] of parsed) {
+    const existing = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === fieldId);
+    if (existing) existing.value = value;
+    else db.project_custom_values.push({ id: nextId(), project_id: projectId, field_id: fieldId, value });
+  }
+}
+
+function serializeCustomValues(projectId: number): Record<string, Row> {
+  const out: Record<string, Row> = {};
+  for (const f of activeCustomFields()) {
+    const value = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === f.id)?.value ?? null;
+    const opt = f.field_type === "dropdown" && value ? valueById(Number(value)) : undefined;
+    out[f.field_key] = { id: f.id, type: f.field_type, value, option_label: opt?.label ?? null, option_color: opt?.color ?? null };
+  }
+  return out;
+}
+
+function customCsvValue(v: Row | undefined): string {
+  if (!v || v.value == null) return "";
+  switch (v.type) {
+    case "dropdown": return v.option_label ?? "";
+    case "checkbox": return v.value === "1" ? "Yes" : "No";
+    case "currency": return fmtCurrency(Number(v.value));
+    default: return String(v.value);
+  }
 }
 
 function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
@@ -153,6 +249,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
   return {
     id: p.id, project_code: p.project_code, mcp_number: p.mcp_number, mcp_name: p.mcp_name,
     assignee_id: p.assignee_id, assignee_name: userName(p.assignee_id) ?? "—",
+    annualized_premium: p.annualized_premium ?? null,
     assignment_date: p.assignment_date, target_date: p.target_date, template_id: p.template_id,
     status_id: p.status_id, status_label: status?.label ?? "—", status_color: status?.color ?? "#64748B",
     status_key: status?.maps_to ?? null,
@@ -167,6 +264,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
     days_in_status: Math.max(0, daysBetween(statusChanged, today())),
     open_task_count: open.length, task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
+    custom: serializeCustomValues(p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
@@ -316,6 +414,95 @@ route("DELETE", "/api/picklist-values/:id", (m) => {
   return ok({ deleted: true });
 });
 
+// ---- dynamic custom project fields ----
+const CUSTOM_FIELD_TYPES = ["text", "number", "currency", "date", "dropdown", "checkbox"];
+const CUSTOM_FIELD_VIEWS = ["project_list", "project_header", "portfolio_card"];
+const OPTION_COLORS = ["#2E4E8F", "#12808A", "#8A6FB8", "#C99239", "#4E9468", "#B0632F", "#5C6B84", "#C2554E"];
+
+const customFieldOut = (f: Row) => ({
+  ...f,
+  options: f.picklist_id
+    ? db.picklist_values.filter((v) => v.picklist_id === f.picklist_id).sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+    : [],
+});
+
+route("GET", "/api/custom-fields", () =>
+  ok(db.custom_fields.slice().sort((a, b) => a.sort_order - b.sort_order || a.id - b.id).map(customFieldOut))
+);
+route("POST", "/api/custom-fields", (_m, _q, b) => {
+  const label = String(b.label ?? "").trim();
+  if (!label) return err(400, "Field label is required");
+  if (!CUSTOM_FIELD_TYPES.includes(b.field_type)) return err(400, `Field type must be one of: ${CUSTOM_FIELD_TYPES.join(", ")}`);
+  const opts = (Array.isArray(b.options) ? b.options : []).map((o: unknown) => String(o).trim()).filter(Boolean);
+  if (b.field_type === "dropdown" && !opts.length) return err(400, "A dropdown field needs at least one option");
+
+  const base = "cf_" + (label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "field");
+  let key = base;
+  for (let n = 2; db.custom_fields.some((f) => f.field_key === key); n++) key = `${base}_${n}`;
+
+  let picklistId: number | null = null;
+  if (b.field_type === "dropdown") {
+    let plName = label;
+    if (db.picklists.some((l) => l.name === plName)) plName = `${plName} (Custom Field)`;
+    picklistId = nextId();
+    db.picklists.push({ id: picklistId, name: plName, object_type: "project", is_system: 0 });
+    opts.forEach((o: string, i: number) =>
+      db.picklist_values.push({
+        id: nextId(), picklist_id: picklistId, label: o, sort_order: i + 1,
+        color: OPTION_COLORS[i % OPTION_COLORS.length], is_active: 1, is_default: i === 0 ? 1 : 0, maps_to: null,
+      })
+    );
+  }
+  const maxSort = Math.max(0, ...db.custom_fields.map((f) => f.sort_order));
+  const f: Row = {
+    id: nextId(), object_type: "project", label, field_key: key, field_type: b.field_type,
+    picklist_id: picklistId, is_active: 1, sort_order: maxSort + 1, created_date: now(),
+  };
+  db.custom_fields.push(f);
+  db.field_requirements.push({ id: nextId(), object_type: "project", field_name: key, label, is_system: 0, required: 0, required_at: "creation" });
+  for (const view of CUSTOM_FIELD_VIEWS) {
+    const max = Math.max(0, ...db.view_layout_fields.filter((x) => x.view_name === view).map((x) => x.display_order));
+    db.view_layout_fields.push({ id: nextId(), view_name: view, field_key: key, label, display_order: max + 1, is_visible: 1, is_locked: 0 });
+  }
+  return ok(customFieldOut(f), 201);
+});
+route("PATCH", "/api/custom-fields/:id", (m, _q, b) => {
+  const f = db.custom_fields.find((x) => x.id === Number(m.id));
+  if (!f) return err(404, "Custom field not found");
+  if (b.label !== undefined) {
+    const label = String(b.label).trim();
+    if (!label) return err(400, "Field label is required");
+    f.label = label;
+    for (const r of db.field_requirements) if (r.object_type === "project" && r.field_name === f.field_key) r.label = label;
+    for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.label = label;
+  }
+  if (b.sort_order !== undefined) f.sort_order = b.sort_order;
+  if (b.is_active !== undefined) {
+    f.is_active = b.is_active ? 1 : 0;
+    for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.is_visible = f.is_active;
+  }
+  return ok(customFieldOut(f));
+});
+route("DELETE", "/api/custom-fields/:id", (m) => {
+  const f = db.custom_fields.find((x) => x.id === Number(m.id));
+  if (!f) return err(404, "Custom field not found");
+  const refs = db.project_custom_values.filter((v) => v.field_id === f.id && v.value != null).length;
+  if (refs > 0) {
+    f.is_active = 0;
+    for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.is_visible = 0;
+    return ok({ deactivated: true, message: `"${f.label}" holds values on ${refs} project(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
+  }
+  db.project_custom_values = db.project_custom_values.filter((v) => v.field_id !== f.id);
+  db.view_layout_fields = db.view_layout_fields.filter((v) => v.field_key !== f.field_key);
+  db.field_requirements = db.field_requirements.filter((r) => !(r.object_type === "project" && r.field_name === f.field_key));
+  db.custom_fields = db.custom_fields.filter((x) => x.id !== f.id);
+  if (f.picklist_id) {
+    db.picklist_values = db.picklist_values.filter((v) => v.picklist_id !== f.picklist_id);
+    db.picklists = db.picklists.filter((l) => l.id !== f.picklist_id);
+  }
+  return ok({ deleted: true });
+});
+
 // ---- templates ----
 route("GET", "/api/templates", () =>
   ok(db.workflow_templates
@@ -454,7 +641,12 @@ route("GET", "/api/projects/:id", (m) => {
 route("POST", "/api/projects", (_m, _q, b) => {
   if (!b.mcp_number?.trim() || !b.mcp_name?.trim() || !b.assignee_id || !b.assignment_date || !b.template_id)
     return err(400, "MCP #, MCP Name, Assignee, Assignment Date and Template are required");
-  const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, project_code: "auto" });
+  const ap = Number(b.annualized_premium);
+  if (b.annualized_premium == null || b.annualized_premium === "" || !Number.isFinite(ap) || ap < 0)
+    return err(400, "Annualized Premium (AP) is required and must be a dollar amount");
+  const custom = validateCustomValues(b.custom);
+  if (custom.errors.length) return err(400, custom.errors.join("; "));
+  const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
   if (reqErrs.length) return err(400, reqErrs.join("; "));
   const active = activeStatusIds();
   const dup = db.projects.find((p) => p.mcp_number === b.mcp_number && active.includes(p.status_id));
@@ -465,14 +657,15 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
   const p: Row = {
     id: nextId(), project_code: code, mcp_number: b.mcp_number, mcp_name: b.mcp_name,
-    assignee_id: b.assignee_id, assignment_date: b.assignment_date, target_date: b.target_date ?? null,
+    assignee_id: b.assignee_id, annualized_premium: ap, assignment_date: b.assignment_date, target_date: b.target_date ?? null,
     template_id: b.template_id, status_id: valueByMapsTo("Project Status", "new")!.id,
     risk_level_id: b.risk_level_id ?? null, rag_override: null, rag_override_reason: null,
     status_changed_date: now(), created_date: now(),
     closed_date: null, closed_by: null, close_reason_id: null, final_summary: null,
   };
   db.projects.push(p);
-  generateTasksFromTemplate(p.id, b.template_id, b.assignment_date);
+  saveCustomValues(p.id, custom.parsed);
+  generateTasksFromTemplate(p.id, b.template_id, b.assignment_date, Number(b.assignee_id));
   logActivity({ project_id: p.id, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
   return ok(serializeProject(p, { withTasks: true }), 201);
 });
@@ -480,7 +673,43 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
-  for (const f of ["mcp_name", "assignee_id", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
+  if ("annualized_premium" in b) {
+    const n = Number(b.annualized_premium);
+    if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
+    b.annualized_premium = n;
+  }
+  const custom = "custom" in b ? validateCustomValues(b.custom) : null;
+  if (custom?.errors.length) return err(400, custom.errors.join("; "));
+
+  const oldAssignee = p.assignee_id;
+  const oldAp = p.annualized_premium ?? null;
+  for (const f of ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
+  if (custom) saveCustomValues(p.id, custom.parsed);
+
+  if ("annualized_premium" in b && b.annualized_premium !== oldAp) {
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `changed Annualized Premium (AP) from ${fmtCurrency(oldAp) || "—"} to ${fmtCurrency(b.annualized_premium)}`,
+    });
+  }
+  if ("assignee_id" in b && Number(b.assignee_id) !== oldAssignee) {
+    const newAssignee = Number(b.assignee_id);
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `changed project assignee from ${userName(oldAssignee) ?? "—"} to ${userName(newAssignee) ?? "—"}`,
+    });
+    // Optional cascade: only open tasks move — Closed/Complete stay untouched
+    if (b.reassign_open_tasks) {
+      const done = doneStatusIds();
+      let n = 0;
+      for (const t of db.project_tasks)
+        if (t.project_id === p.id && !done.includes(t.status_id)) { t.assigned_to = newAssignee; n++; }
+      logActivity({
+        project_id: p.id, user_id: b.user_id, kind: "system",
+        note: `reassigned ${n} open task(s) to ${userName(newAssignee) ?? "—"}`,
+      });
+    }
+  }
   return ok(serializeProject(p, { withTasks: true }));
 });
 route("POST", "/api/projects/:id/status", (m, _q, b) => {
@@ -1027,22 +1256,28 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
+const normalizeHeader = (h: string) => h.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
 function validateImport(csvText: string): { rows: any[]; headerError?: string } {
   const raw = parseCsv(csvText);
   if (!raw.length) return { rows: [], headerError: "File is empty" };
-  const header = raw[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_"));
+  const header = raw[0].map(normalizeHeader);
   const col = (names: string[]) => header.findIndex((h) => names.includes(h));
   const iMcp = col(["mcp_number", "mcp_", "mcp"]);
   const iName = col(["mcp_name", "customer", "customer_name"]);
   const iAssignee = col(["assignee", "assignee_name", "assigned_to"]);
+  const iAp = col(["ap", "annualized_premium", "annualized_premium_ap", "annual_premium"]);
   const iDate = col(["assignment_date", "assigned", "date"]);
   const iTpl = col(["template", "template_name", "workflow_template"]);
   if (iMcp < 0 || iName < 0)
-    return { rows: [], headerError: "Header must include at least 'MCP Number' and 'MCP Name' columns (optional: Assignee, Assignment Date, Template)" };
+    return { rows: [], headerError: "Header must include at least 'MCP Number' and 'MCP Name' columns (plus 'AP'; optional: Assignee, Assignment Date, Template)" };
   const templates = db.workflow_templates.filter((t) => t.is_active);
   const defaultTpl = templates.find((t) => t.is_default) ?? templates[0];
   const active = activeStatusIds();
   const seen = new Set<string>();
+  const customCols: [Row, number][] = activeCustomFields()
+    .map((f): [Row, number] => [f, col([normalizeHeader(f.label), f.field_key])])
+    .filter(([, i]) => i >= 0);
 
   const rows = raw.slice(1).map((r, idx) => {
     const row: any = {
@@ -1050,9 +1285,11 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       mcp_number: (r[iMcp] ?? "").trim(),
       mcp_name: (r[iName] ?? "").trim(),
       assignee: iAssignee >= 0 ? (r[iAssignee] ?? "").trim() : "",
+      annualized_premium: null as number | null,
       assignment_date: iDate >= 0 ? (r[iDate] ?? "").trim() : "",
       template: iTpl >= 0 ? (r[iTpl] ?? "").trim() : "",
       errors: [] as string[],
+      custom: {} as Record<string, string | null>,
     };
     if (!row.mcp_number) row.errors.push("MCP # is required");
     if (!row.mcp_name) row.errors.push("MCP Name is required");
@@ -1067,6 +1304,14 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       if (!u) row.errors.push(`Unknown assignee "${row.assignee}"`);
       else row.assignee_id = u.id;
     } else row.errors.push("Assignee is required");
+    // AP is required on every project — same rule as the create form
+    const apRaw = iAp >= 0 ? (r[iAp] ?? "").trim() : "";
+    if (!apRaw) row.errors.push("Annualized Premium (AP) is required");
+    else {
+      const n = parseCurrency(apRaw);
+      if (n == null || !Number.isFinite(n) || n < 0) row.errors.push(`Invalid AP "${apRaw}" — use a dollar amount like 12500 or $12,500.00`);
+      else row.annualized_premium = n;
+    }
     if (row.assignment_date && !/^\d{4}-\d{2}-\d{2}$/.test(row.assignment_date)) row.errors.push("Assignment date must be YYYY-MM-DD");
     if (!row.assignment_date) row.assignment_date = today();
     if (row.template) {
@@ -1074,6 +1319,11 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       if (!tpl) row.errors.push(`Unknown template "${row.template}"`);
       else row.template_id = tpl.id;
     } else row.template_id = defaultTpl?.id;
+    for (const [f, i] of customCols) {
+      const parsed = parseCustomValue(f, r[i]);
+      if (parsed.ok) row.custom[f.field_key] = parsed.value;
+      else row.errors.push(parsed.error);
+    }
     return row;
   });
   return { rows };
@@ -1091,18 +1341,25 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
   const valid = rows.filter((r) => !r.errors.length && r.assignee_id && r.template_id);
   const statusNew = valueByMapsTo("Project Status", "new")!;
   const created: string[] = [];
+  const fieldIdByKey = new Map(activeCustomFields().map((f) => [f.field_key, f.id]));
   for (const r of valid) {
     const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
     const pid = nextId();
     db.projects.push({
       id: pid, project_code: code, mcp_number: r.mcp_number, mcp_name: r.mcp_name,
-      assignee_id: r.assignee_id, assignment_date: r.assignment_date, target_date: null,
+      assignee_id: r.assignee_id, annualized_premium: r.annualized_premium, assignment_date: r.assignment_date, target_date: null,
       template_id: r.template_id, status_id: statusNew.id, risk_level_id: null,
       rag_override: null, rag_override_reason: null,
       status_changed_date: now(), created_date: now(),
       closed_date: null, closed_by: null, close_reason_id: null, final_summary: null,
     });
-    generateTasksFromTemplate(pid, r.template_id, r.assignment_date);
+    const parsed = new Map<number, string | null>();
+    for (const [key, value] of Object.entries(r.custom as Record<string, string | null>)) {
+      const fid = fieldIdByKey.get(key);
+      if (fid) parsed.set(fid, value);
+    }
+    saveCustomValues(pid, parsed);
+    generateTasksFromTemplate(pid, r.template_id, r.assignment_date, r.assignee_id ?? null);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created via CSV import` });
     created.push(code);
   }
@@ -1125,11 +1382,16 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     let projects = db.projects.slice().sort((a, b) => (a.created_date < b.created_date ? -1 : 1)).map((p) => serializeProject(p));
     if (q.get("scope") === "active") projects = projects.filter((p) => !p.is_closed);
     if (q.get("scope") === "closed") projects = projects.filter((p) => p.is_closed);
+    const customFields = activeCustomFields();
     return {
       filename: "projects.csv",
       csv: toCsv(
-        ["Project ID", "MCP #", "MCP Name", "Assignee", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason"],
-        projects.map((p) => [p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, p.assignment_date, p.status_label, p.rag.toUpperCase(), p.risk_label ?? "", p.open_task_count, p.created_date, p.closed_date ?? "", p.close_reason_label ?? ""])
+        ["Project ID", "MCP #", "MCP Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
+        projects.map((p) => [
+          p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
+          p.status_label, p.rag.toUpperCase(), p.risk_label ?? "", p.open_task_count, p.created_date, p.closed_date ?? "", p.close_reason_label ?? "",
+          ...customFields.map((f) => customCsvValue(p.custom?.[f.field_key])),
+        ])
       ),
     };
   }
@@ -1160,8 +1422,8 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     return {
       filename: "wins-report.csv",
       csv: toCsv(
-        ["Occurred", "Logged", "Project ID", "MCP #", "MCP Name", "Category", "Win", "Logged By"],
-        out.map((w) => [w.occurred_date, w.logged_date?.slice(0, 10) ?? "", w.project_code, w.mcp_number, w.mcp_name, w.category_label ?? "", w.description, w.logged_by_name ?? ""])
+        ["Occurred", "Logged", "Project ID", "MCP #", "MCP Name", "AP", "Category", "Win", "Logged By"],
+        out.map((w) => [w.occurred_date, w.logged_date?.slice(0, 10) ?? "", w.project_code, w.mcp_number, w.mcp_name, fmtCurrency(w.annualized_premium), w.category_label ?? "", w.description, w.logged_by_name ?? ""])
       ),
     };
   }

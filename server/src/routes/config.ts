@@ -3,6 +3,118 @@ import { db, getSettingNum } from "../db.js";
 
 export const config = Router();
 
+// ---------- Dynamic (custom) project fields ----------
+
+const CUSTOM_FIELD_TYPES = ["text", "number", "currency", "date", "dropdown", "checkbox"];
+const CUSTOM_FIELD_VIEWS = ["project_list", "project_header", "portfolio_card"];
+const OPTION_COLORS = ["#2E4E8F", "#12808A", "#8A6FB8", "#C99239", "#4E9468", "#B0632F", "#5C6B84", "#C2554E"];
+
+function customFieldOut(f: any) {
+  const values = f.picklist_id
+    ? db.prepare("SELECT * FROM picklist_values WHERE picklist_id = ? ORDER BY sort_order, id").all(f.picklist_id)
+    : [];
+  return { ...f, options: values };
+}
+
+config.get("/custom-fields", (_req, res) => {
+  const rows = db.prepare("SELECT * FROM custom_fields ORDER BY sort_order, id").all() as any[];
+  res.json(rows.map(customFieldOut));
+});
+
+config.post("/custom-fields", (req, res) => {
+  const { label, field_type, options } = req.body as { label?: string; field_type?: string; options?: string[] };
+  if (!label?.trim()) return res.status(400).json({ error: "Field label is required" });
+  if (!field_type || !CUSTOM_FIELD_TYPES.includes(field_type))
+    return res.status(400).json({ error: `Field type must be one of: ${CUSTOM_FIELD_TYPES.join(", ")}` });
+  const opts = (options ?? []).map((o) => String(o).trim()).filter(Boolean);
+  if (field_type === "dropdown" && !opts.length)
+    return res.status(400).json({ error: "A dropdown field needs at least one option" });
+
+  // Stable key survives later renames; disambiguate collisions with a suffix
+  const base = "cf_" + (label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "field");
+  let key = base;
+  for (let n = 2; db.prepare("SELECT id FROM custom_fields WHERE field_key = ?").get(key); n++) key = `${base}_${n}`;
+
+  const create = db.transaction(() => {
+    let picklistId: number | null = null;
+    if (field_type === "dropdown") {
+      // Options live in the standard picklist system → managed from Picklists & Values
+      let plName = label.trim();
+      if (db.prepare("SELECT id FROM picklists WHERE name = ?").get(plName)) plName = `${plName} (Custom Field)`;
+      picklistId = db
+        .prepare("INSERT INTO picklists (name, object_type, is_system) VALUES (?, 'project', 0)")
+        .run(plName).lastInsertRowid as number;
+      opts.forEach((o, i) =>
+        db.prepare(
+          "INSERT INTO picklist_values (picklist_id, label, sort_order, color, is_active, is_default) VALUES (?, ?, ?, ?, 1, ?)"
+        ).run(picklistId, o, i + 1, OPTION_COLORS[i % OPTION_COLORS.length], i === 0 ? 1 : 0)
+      );
+    }
+    const maxSort = db.prepare("SELECT MAX(sort_order) AS m FROM custom_fields").get() as { m: number | null };
+    const id = db
+      .prepare("INSERT INTO custom_fields (object_type, label, field_key, field_type, picklist_id, sort_order) VALUES ('project', ?, ?, ?, ?, ?)")
+      .run(label.trim(), key, field_type, picklistId, (maxSort.m ?? 0) + 1).lastInsertRowid as number;
+
+    // Requiredness is managed alongside built-in fields in Field Requirements
+    db.prepare(
+      "INSERT INTO field_requirements (object_type, field_name, label, is_system, required, required_at) VALUES ('project', ?, ?, 0, 0, 'creation')"
+    ).run(key, label.trim());
+    // …and visibility/order alongside built-in fields in Card & View Layouts
+    for (const view of CUSTOM_FIELD_VIEWS) {
+      const max = db.prepare("SELECT MAX(display_order) AS m FROM view_layout_fields WHERE view_name = ?").get(view) as { m: number | null };
+      db.prepare(
+        "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES (?, ?, ?, ?, 1, 0)"
+      ).run(view, key, label.trim(), (max.m ?? 0) + 1);
+    }
+    return id;
+  });
+  const id = create();
+  res.status(201).json(customFieldOut(db.prepare("SELECT * FROM custom_fields WHERE id = ?").get(id)));
+});
+
+config.patch("/custom-fields/:id", (req, res) => {
+  const f = db.prepare("SELECT * FROM custom_fields WHERE id = ?").get(req.params.id) as any;
+  if (!f) return res.status(404).json({ error: "Custom field not found" });
+  const { label, is_active, sort_order } = req.body;
+  if (label !== undefined) {
+    if (!String(label).trim()) return res.status(400).json({ error: "Field label is required" });
+    db.prepare("UPDATE custom_fields SET label = ? WHERE id = ?").run(String(label).trim(), f.id);
+    db.prepare("UPDATE field_requirements SET label = ? WHERE object_type = 'project' AND field_name = ?").run(String(label).trim(), f.field_key);
+    db.prepare("UPDATE view_layout_fields SET label = ? WHERE field_key = ?").run(String(label).trim(), f.field_key);
+  }
+  if (sort_order !== undefined) db.prepare("UPDATE custom_fields SET sort_order = ? WHERE id = ?").run(sort_order, f.id);
+  if (is_active !== undefined) {
+    db.prepare("UPDATE custom_fields SET is_active = ? WHERE id = ?").run(is_active ? 1 : 0, f.id);
+    // Mirror to the layout slots so cards/tables drop the field immediately
+    db.prepare("UPDATE view_layout_fields SET is_visible = ? WHERE field_key = ?").run(is_active ? 1 : 0, f.field_key);
+  }
+  res.json(customFieldOut(db.prepare("SELECT * FROM custom_fields WHERE id = ?").get(f.id)));
+});
+
+/** Same guardrail as picklist values: fields holding data are deactivated, never hard-deleted. */
+config.delete("/custom-fields/:id", (req, res) => {
+  const f = db.prepare("SELECT * FROM custom_fields WHERE id = ?").get(req.params.id) as any;
+  if (!f) return res.status(404).json({ error: "Custom field not found" });
+  const refs = (db.prepare("SELECT COUNT(*) AS n FROM project_custom_values WHERE field_id = ? AND value IS NOT NULL").get(f.id) as any).n;
+  if (refs > 0) {
+    db.prepare("UPDATE custom_fields SET is_active = 0 WHERE id = ?").run(f.id);
+    db.prepare("UPDATE view_layout_fields SET is_visible = 0 WHERE field_key = ?").run(f.field_key);
+    return res.json({ deactivated: true, message: `"${f.label}" holds values on ${refs} project(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
+  }
+  const remove = db.transaction(() => {
+    db.prepare("DELETE FROM project_custom_values WHERE field_id = ?").run(f.id);
+    db.prepare("DELETE FROM view_layout_fields WHERE field_key = ?").run(f.field_key);
+    db.prepare("DELETE FROM field_requirements WHERE object_type = 'project' AND field_name = ?").run(f.field_key);
+    db.prepare("DELETE FROM custom_fields WHERE id = ?").run(f.id);
+    if (f.picklist_id) {
+      db.prepare("DELETE FROM picklist_values WHERE picklist_id = ?").run(f.picklist_id);
+      db.prepare("DELETE FROM picklists WHERE id = ?").run(f.picklist_id);
+    }
+  });
+  remove();
+  res.json({ deleted: true });
+});
+
 // ---------- Users ----------
 config.get("/users", (_req, res) => {
   res.json(db.prepare("SELECT * FROM users WHERE is_active = 1 ORDER BY name").all());

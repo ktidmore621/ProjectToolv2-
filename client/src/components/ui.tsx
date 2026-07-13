@@ -49,23 +49,30 @@ export function ragColor(rag: Rag): string {
 export function Modal({
   title, children, onClose, wide,
 }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Latest onClose behind a ref: callers often pass inline closures, and the
+  // mount-only effect below must never re-run because of a new prop identity —
+  // re-running it used to steal focus from whatever the user was typing in.
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; });
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     window.addEventListener("keydown", onKey);
-    ref.current?.querySelector<HTMLElement>("input, select, textarea, button")?.focus();
+    // Initial focus goes to the first control in the body — the header ✕ is
+    // deliberately excluded so it can never end up focused instead of a field.
+    bodyRef.current?.querySelector<HTMLElement>("input, select, textarea, button")?.focus();
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-ink/40 p-4 pt-[8vh]" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={ref} role="dialog" aria-modal="true" aria-label={title}
+      <div role="dialog" aria-modal="true" aria-label={title}
         className={`w-full ${wide ? "max-w-3xl" : "max-w-lg"} rounded-xl bg-surface shadow-lift`}>
         <div className="flex items-center justify-between border-b border-hairline px-5 py-3.5">
           <h2 className="text-base font-semibold">{title}</h2>
           <button onClick={onClose} aria-label="Close dialog"
             className="rounded p-1 text-muted hover:bg-canvas hover:text-ink">✕</button>
         </div>
-        <div className="px-5 py-4">{children}</div>
+        <div ref={bodyRef} className="px-5 py-4">{children}</div>
       </div>
     </div>
   );

@@ -80,6 +80,151 @@ export function nextProjectCode(): string {
   return `CAP-${String(row.n + 1).padStart(4, "0")}`;
 }
 
+/** '$0,000.00' — the one AP/currency format used across tables, cards, headers and CSVs. */
+export function fmtCurrency(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(Number(n))) return "";
+  return Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** '$4,200.00', '4200', '4,200' → 4200; null when blank; NaN when unparseable. */
+export function parseCurrency(raw: unknown): number | null {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  return Number(String(raw).replace(/[$,\s]/g, ""));
+}
+
+// ---------- Dynamic (custom) project fields ----------
+
+export interface CustomField {
+  id: number;
+  object_type: string;
+  label: string;
+  field_key: string;
+  field_type: "text" | "number" | "currency" | "date" | "dropdown" | "checkbox";
+  picklist_id: number | null;
+  is_active: number;
+  sort_order: number;
+}
+
+export function activeCustomFields(): CustomField[] {
+  return db
+    .prepare("SELECT * FROM custom_fields WHERE object_type = 'project' AND is_active = 1 ORDER BY sort_order, id")
+    .all() as CustomField[];
+}
+
+/** Validate one raw value against its field definition → canonical stored text or an error. */
+export function parseCustomValue(field: CustomField, raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return { ok: true, value: null };
+  const s = String(raw).trim();
+  switch (field.field_type) {
+    case "text":
+      return { ok: true, value: s };
+    case "number": {
+      const n = Number(s.replace(/,/g, ""));
+      if (!Number.isFinite(n)) return { ok: false, error: `${field.label} must be a number` };
+      return { ok: true, value: String(n) };
+    }
+    case "currency": {
+      const n = parseCurrency(s);
+      if (n == null || !Number.isFinite(n) || n < 0) return { ok: false, error: `${field.label} must be a dollar amount` };
+      return { ok: true, value: n.toFixed(2) };
+    }
+    case "date": {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return { ok: false, error: `${field.label} must be YYYY-MM-DD` };
+      return { ok: true, value: s };
+    }
+    case "checkbox": {
+      if (raw === true || ["1", "true", "yes", "y", "x"].includes(s.toLowerCase())) return { ok: true, value: "1" };
+      if (raw === false || ["0", "false", "no", "n"].includes(s.toLowerCase())) return { ok: true, value: "0" };
+      return { ok: false, error: `${field.label} must be Yes or No` };
+    }
+    case "dropdown": {
+      const opts = field.picklist_id
+        ? (db.prepare("SELECT * FROM picklist_values WHERE picklist_id = ?").all(field.picklist_id) as PickValue[])
+        : [];
+      const match = opts.find((v) => String(v.id) === s) ?? opts.find((v) => v.label.toLowerCase() === s.toLowerCase());
+      if (!match) return { ok: false, error: `${field.label}: unknown option "${s}"` };
+      return { ok: true, value: String(match.id) };
+    }
+    default:
+      return { ok: false, error: `${field.label} has an unsupported type` };
+  }
+}
+
+/**
+ * Validate a { field_key: raw } map from a create/edit form or import row.
+ * `flat` mirrors the parsed values keyed by field_key so field_requirements
+ * checks can treat custom fields exactly like built-in ones.
+ */
+export function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined): {
+  errors: string[];
+  parsed: Map<number, string | null>;
+  flat: Record<string, string | null>;
+} {
+  const errors: string[] = [];
+  const parsed = new Map<number, string | null>();
+  const flat: Record<string, string | null> = {};
+  for (const f of activeCustomFields()) {
+    const raw = bodyCustom?.[f.field_key];
+    const r = parseCustomValue(f, raw);
+    if (r.ok) {
+      parsed.set(f.id, r.value);
+      flat[f.field_key] = r.value;
+    } else errors.push(r.error);
+  }
+  return { errors, parsed, flat };
+}
+
+const upsertCustomValue = () =>
+  db.prepare(
+    `INSERT INTO project_custom_values (project_id, field_id, value) VALUES (?, ?, ?)
+     ON CONFLICT(project_id, field_id) DO UPDATE SET value = excluded.value`
+  );
+
+export function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
+  const ins = upsertCustomValue();
+  for (const [fieldId, value] of parsed) ins.run(projectId, fieldId, value);
+}
+
+export interface CustomValueOut {
+  type: CustomField["field_type"];
+  value: string | null;
+  option_label: string | null;
+  option_color: string | null;
+}
+
+/** { field_key: {type, value, option_label, option_color} } for one project — what every view renders from. */
+export function serializeCustomValues(projectId: number): Record<string, CustomValueOut> {
+  const fields = activeCustomFields();
+  if (!fields.length) return {};
+  const rows = db
+    .prepare("SELECT field_id, value FROM project_custom_values WHERE project_id = ?")
+    .all(projectId) as { field_id: number; value: string | null }[];
+  const byField = new Map(rows.map((r) => [r.field_id, r.value]));
+  const out: Record<string, CustomValueOut> = {};
+  for (const f of fields) {
+    const value = byField.get(f.id) ?? null;
+    const opt = f.field_type === "dropdown" && value ? valueById(Number(value)) : undefined;
+    out[f.field_key] = {
+      type: f.field_type,
+      value,
+      option_label: opt?.label ?? null,
+      option_color: opt?.color ?? null,
+    };
+  }
+  return out;
+}
+
+/** Display text for CSV exports — dropdown label, Yes/No, formatted currency, raw otherwise. */
+export function customCsvValue(v: CustomValueOut | undefined): string {
+  if (!v || v.value == null) return "";
+  switch (v.type) {
+    case "dropdown": return v.option_label ?? "";
+    case "checkbox": return v.value === "1" ? "Yes" : "No";
+    case "currency": return fmtCurrency(Number(v.value));
+    default: return v.value;
+  }
+}
+
 function addDays(iso: string, days: number): string {
   const d = new Date(iso + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + days);
@@ -90,16 +235,18 @@ function addDays(iso: string, days: number): string {
  * Generate project tasks from a template (snapshot at creation — later template
  * edits never touch this project). Conditional action-plan tasks are copied too,
  * but hidden behind conditional_pending until the decision task answers Yes.
+ * Every generated task (including conditional ones activated later) starts
+ * assigned to the project assignee.
  */
-export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string) {
+export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string, assigneeId: number | null = null) {
   const notStarted = valueByMapsTo("Task Status", "not_started");
   const tasks = db
     .prepare("SELECT * FROM template_tasks WHERE template_id = ? ORDER BY step_order")
     .all(templateId) as any[];
   const ins = db.prepare(
     `INSERT INTO project_tasks (project_id, template_task_id, name, description, task_type, step_order,
-        due_date, status_id, priority_id, required, is_decision, conditional_pending)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        assigned_to, due_date, status_id, priority_id, required, is_decision, conditional_pending)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const t of tasks) {
     const conditional = t.generation === "action_plan" ? 1 : 0;
@@ -110,6 +257,7 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
       t.description ?? "",
       conditional ? "action_plan" : "standard",
       t.step_order,
+      assigneeId,
       conditional ? null : addDays(assignmentDate, t.due_offset),
       notStarted!.id,
       t.default_priority_id ?? null,
@@ -240,6 +388,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     mcp_name: p.mcp_name,
     assignee_id: p.assignee_id,
     assignee_name: assignee?.name ?? "—",
+    annualized_premium: p.annualized_premium,
     assignment_date: p.assignment_date,
     target_date: p.target_date,
     template_id: p.template_id,
@@ -266,6 +415,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     open_task_count: openTasks.length,
     task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
+    custom: serializeCustomValues(p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
@@ -341,8 +491,8 @@ export function serializeActivity(a: any) {
 export function serializeWin(w: any) {
   const cat = valueById(w.category_id);
   const project = db
-    .prepare("SELECT project_code, mcp_name, mcp_number FROM projects WHERE id = ?")
-    .get(w.project_id) as { project_code: string; mcp_name: string; mcp_number: string } | undefined;
+    .prepare("SELECT project_code, mcp_name, mcp_number, annualized_premium FROM projects WHERE id = ?")
+    .get(w.project_id) as { project_code: string; mcp_name: string; mcp_number: string; annualized_premium: number | null } | undefined;
   const loggedBy = w.logged_by ? (userName.get(w.logged_by) as { name: string } | undefined) : undefined;
   return {
     ...w,
@@ -352,6 +502,7 @@ export function serializeWin(w: any) {
     project_code: project?.project_code ?? null,
     mcp_name: project?.mcp_name ?? null,
     mcp_number: project?.mcp_number ?? null,
+    annualized_premium: project?.annualized_premium ?? null,
     logged_by_name: loggedBy?.name ?? null,
   };
 }

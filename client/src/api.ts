@@ -80,6 +80,29 @@ export interface LayoutField {
 }
 export type Rag = "red" | "amber" | "green";
 
+export type CustomFieldType = "text" | "number" | "currency" | "date" | "dropdown" | "checkbox";
+
+/** Admin-defined project field (Configuration → Custom Fields). */
+export interface CustomField {
+  id: number;
+  object_type: string;
+  label: string;
+  field_key: string;
+  field_type: CustomFieldType;
+  picklist_id: number | null;
+  is_active: number;
+  sort_order: number;
+  options: PickValue[]; // dropdown options (managed as a picklist)
+}
+
+/** One project's stored value for a custom field, display-ready. */
+export interface CustomValue {
+  type: CustomFieldType;
+  value: string | null;
+  option_label: string | null;
+  option_color: string | null;
+}
+
 export interface Project {
   id: number;
   project_code: string;
@@ -87,6 +110,7 @@ export interface Project {
   mcp_name: string;
   assignee_id: number;
   assignee_name: string;
+  annualized_premium: number | null;
   assignment_date: string;
   target_date: string | null;
   template_id: number;
@@ -113,6 +137,7 @@ export interface Project {
   open_task_count: number;
   task_count: number;
   next_due_task: { name: string; due_date: string } | null;
+  custom?: Record<string, CustomValue>;
   tasks?: Task[];
 }
 
@@ -186,6 +211,7 @@ export interface Win {
   project_code: string | null;
   mcp_name: string | null;
   mcp_number: string | null;
+  annualized_premium: number | null;
 }
 
 /** CSV export: normal build navigates to the server endpoint; demo build generates the file in-browser. */
@@ -201,6 +227,12 @@ export async function csvDownload(url: string) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+/** '$0,000.00' — AP and currency custom fields render with this everywhere. */
+export function fmtCurrency(n: number | string | null | undefined): string {
+  if (n == null || n === "" || !Number.isFinite(Number(n))) return "—";
+  return Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function fmtDate(iso: string | null | undefined): string {

@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, Project, todayIso } from "../api";
-import { renderProjectField, useLayout } from "../components/fields";
+import { api, ApiError, fmtCurrency, Project, todayIso } from "../api";
+import { CustomFieldInputs, renderProjectField, useCustomFields, useLayout } from "../components/fields";
 import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
 import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
@@ -96,10 +96,12 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
   const toast = useToast();
   const navigate = useNavigate();
   const [templates, setTemplates] = useState<any[]>([]);
+  const customFields = useCustomFields();
   const [form, setForm] = useState({
-    mcp_number: "", mcp_name: "", assignee_id: currentUser?.id ?? 0,
+    mcp_number: "", mcp_name: "", assignee_id: currentUser?.id ?? 0, annualized_premium: "",
     assignment_date: todayIso(), target_date: "", risk_level_id: "", template_id: 0,
   });
+  const [custom, setCustom] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -121,9 +123,11 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
       const p = await api.post<Project>("/api/projects", {
         ...form,
         assignee_id: Number(form.assignee_id),
+        annualized_premium: form.annualized_premium === "" ? undefined : Number(form.annualized_premium),
         template_id: Number(form.template_id),
         risk_level_id: form.risk_level_id ? Number(form.risk_level_id) : null,
         target_date: form.target_date || null,
+        custom,
         user_id: currentUser?.id,
       });
       toast(`Project ${p.project_code} created for ${p.mcp_name}`, "success");
@@ -145,6 +149,10 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
             {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </Field>
+        <Field label="Annualized Premium (AP)" hint="Required — the customer's annualized premium in dollars.">
+          <input type="number" min="0" step="0.01" className={inputCls} required value={form.annualized_premium}
+            onChange={(e) => setForm({ ...form, annualized_premium: e.target.value })} placeholder="e.g. 12500.00" />
+        </Field>
         <Field label="Assignment date"><input type="date" className={inputCls} required value={form.assignment_date} onChange={(e) => setForm({ ...form, assignment_date: e.target.value })} /></Field>
         <Field label="Target date (optional)"><input type="date" className={inputCls} value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} /></Field>
         <Field label="Risk level">
@@ -153,11 +161,12 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
             {activeValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
           </select>
         </Field>
-        <Field label="Workflow template" hint="Generates the project's standard tasks. Standard tasks can't be removed or reordered.">
+        <Field label="Workflow template" hint="Generates the project's standard tasks (assigned to the project assignee). Standard tasks can't be removed or reordered.">
           <select className={inputCls} required value={form.template_id} onChange={(e) => setForm({ ...form, template_id: Number(e.target.value) })}>
             {templates.map((t) => <option key={t.id} value={t.id}>{t.name}{t.is_default ? " (default)" : ""}</option>)}
           </select>
         </Field>
+        <CustomFieldInputs fields={customFields} values={custom} onChange={(k, v) => setCustom((c) => ({ ...c, [k]: v }))} />
         {selectedTpl && (
           <div className="col-span-2 rounded-lg bg-canvas p-3">
             <div className="mb-1.5 text-xs font-semibold text-muted">This template will generate:</div>
@@ -208,7 +217,8 @@ function ImportModal({ onClose, onImported }: { onClose: () => void; onImported:
   return (
     <Modal title="Import projects from CSV" onClose={onClose} wide>
       <p className="mb-3 text-xs text-muted">
-        Columns: <code className="font-mono">MCP Number, MCP Name, Assignee, Assignment Date (YYYY-MM-DD), Template</code>.
+        Columns: <code className="font-mono">MCP Number, MCP Name, Assignee, AP, Assignment Date (YYYY-MM-DD), Template</code>,
+        plus any custom project fields by name. AP is required (e.g. <code className="font-mono">12500</code> or <code className="font-mono">$12,500.00</code>).
         Assignee matches by name or email; template defaults to the default template. Rows are validated before anything is created.
       </p>
       <input type="file" accept=".csv,text/csv" aria-label="Choose CSV file"
@@ -220,7 +230,7 @@ function ImportModal({ onClose, onImported }: { onClose: () => void; onImported:
         <div className="mt-3 max-h-64 overflow-y-auto rounded-lg border border-hairline">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-canvas">
-              <tr className="text-left">{["Line", "MCP #", "MCP Name", "Assignee", "Date", "Result"].map((h) => <th key={h} className="px-2 py-1.5 font-semibold text-muted">{h}</th>)}</tr>
+              <tr className="text-left">{["Line", "MCP #", "MCP Name", "Assignee", "AP", "Date", "Result"].map((h) => <th key={h} className="px-2 py-1.5 font-semibold text-muted">{h}</th>)}</tr>
             </thead>
             <tbody>
               {preview.rows.map((r: any) => (
@@ -229,6 +239,7 @@ function ImportModal({ onClose, onImported }: { onClose: () => void; onImported:
                   <td className="px-2 py-1 font-mono">{r.mcp_number}</td>
                   <td className="px-2 py-1">{r.mcp_name}</td>
                   <td className="px-2 py-1">{r.assignee}</td>
+                  <td className="px-2 py-1 font-mono">{r.annualized_premium != null ? fmtCurrency(r.annualized_premium) : "—"}</td>
                   <td className="px-2 py-1 font-mono">{r.assignment_date}</td>
                   <td className="px-2 py-1">
                     {r.errors.length ? <span className="text-rag-red">{r.errors.join("; ")}</span> : <span className="text-rag-green">Ready</span>}
