@@ -49,18 +49,18 @@ npm start            # Express serves API + built client on :3001
 ## What's implemented (spec map)
 
 - **§2 Lifecycle** — auto Project IDs (`CAP-0001`…), one active project per MCP (server-enforced), closed projects permanently read-only, returning MCPs get a new project.
-- **§4 Workflow** — template-generated tasks (snapshot at creation → non-retroactive template edits by construction), ad-hoc tasks (standard tasks can't be removed/reordered), soft out-of-order warning, skip-requires-reason everywhere, conditional action-plan tasks behind the "Action plan needed?" decision point, auto-logged status-change activity, RAG auto-calc with audited manual override, closure requirements with audited override path.
+- **§4 Workflow** — template-generated tasks (snapshot at creation → non-retroactive template edits by construction), ad-hoc tasks (standard tasks can't be removed/reordered), soft out-of-order warning, skip-requires-reason everywhere, auto-logged status-change activity, RAG auto-calc with audited manual override, closure requirements with audited override path.
 - **§5 Configuration (open to all users)** — generic picklist manager (deactivate-not-delete guardrail, protected system values), template builder with live preview, field-requirement rules read at runtime (Creation / Always / At closure), RAG day-thresholds editable, per-view card/column layouts with locked fields and live preview.
-- **§6 Kanban** — Portfolio board (columns = Project Status, RAG left-edge bar, days-in-status, next due task, filters, closure validation on drop) and per-project Task board (columns = Task Status, same skip/decision rules as the detail view).
+- **§6 Kanban** — Portfolio board (columns = Project Status, RAG left-edge bar, days-in-status, next due task, filters, closure validation on drop) and per-project Task board (columns = Task Status, same skip rules as the detail view).
 - **§7 Timecards** — My Timecard weekly grid (project rows, expandable task sub-rows, click-cell quick add, week nav) and Team Timecard (user → project drill-down, hours-by-activity-type, weekly + custom-range CSV export). Approval workflow deferred per §7.3.
 - **§8 Import/Export** — CSV project import with validation + preview before commit; CSV exports for projects, time entries, and the wins/closure report.
-- **§9 Screens** — Dashboard, Portfolio Kanban, Project List, Project Detail (Tasks list/Kanban toggle, Time, Notes/Activity, History tabs), My/Team Timecard, History archive, Configuration.
+- **§9 Screens** — Home, Portfolio Kanban, Project List, Project Detail (Tasks list/Kanban toggle, Time, Notes/Activity, History tabs), My/Team Timecard, History archive, Configuration.
 - **§10 Design system** — token-driven theme (desaturated RAG palette, IBM Plex Sans/Mono), RAG as consistent visual language, skeleton loading, plain-language toasts, keyboard-visible focus, color always paired with labels, `prefers-reduced-motion` respected.
 
 ## v2 enhancements (per the v2 delta spec)
 
-- **§1 Navigation** — the standalone Kanban nav item merged into **Projects**: one screen with a List / Kanban / Task List view toggle (persists per session). The new cross-project **Task List View** filters (Overdue, Blocked, Assigned To, Project, Status) combine and live in the URL, so every dashboard KPI deep-links into a pre-filtered view.
-- **§2 Dashboard redesign** — time-of-day greeting, KPI cards with icon badges + trend lines, Portfolio RAG bar, "This Week" agenda (tasks due + calls/visits/meetings, grouped Today/Tomorrow/weekday, completed items checked & muted), Recent Activity feed, and a Recent Wins highlight reel.
+- **§1 Navigation** — the standalone Kanban nav item merged into **Projects**: one screen with a List / Kanban / Task List view toggle ahead of the search field; clicking Projects in the nav always opens the default Project List. The new cross-project **Task List View** filters (Overdue, Blocked, Assigned To, Project, Status) combine and live in the URL, so every Home KPI deep-links into a pre-filtered view.
+- **§2 Home redesign** — time-of-day greeting, KPI cards with icon badges + trend lines, Portfolio RAG bar, "This Week" agenda (tasks due + calls/visits/meetings, grouped Today/Tomorrow/weekday, completed items checked & muted), Recent Activity feed (rows show the customer/MCP name), and a Recent Wins highlight reel.
 - **§3 Wins** — first-class `wins` entity: loggable at any point in a project's lifecycle (Wins tab on Project Detail), timestamped (occurred vs logged), categorized via the admin-configurable **Win Category** picklist, and exportable portfolio-wide with a date range (`/api/export/wins.csv`). The v1 closed-projects report lives on at `/api/export/closures.csv`; `final_summary` stays as the closure narrative.
 - **§4 Task notes** — append-only note history per task (backed by the existing Activity entity, indexed by task + date); latest note surfaces inline in the task list and task modal, notes can be added while creating or editing a task.
 - **§5 Activity logging** — Notes & Activity workspace: log Phone Calls / Site Visits / Client Meetings / Other with date + start/end times, linked **many-to-many** to tasks via the new `task_activity_links` join table; module filters for Notes / Activities / All.
@@ -72,7 +72,7 @@ npm start            # Express serves API + built client on :3001
 All editable in **Configuration** after the fact:
 
 - RAG thresholds: Red = required task overdue **3+** days; Amber = due within **3** days or stalled **7** days (Configuration → Field Requirements).
-- Default template due offsets: +5/+10/+14/+16/+18 days for analysis → decision, +21/+28 for conditional action-plan tasks, +30 for final review/close; High priority for analysis & visit, Medium otherwise.
+- Default template due offsets: +5/+10/+14/+16 days for the analysis steps, +21/+28 for the action-plan tasks, +30 for final review/close; High priority for analysis & visit, Medium otherwise.
 
 ## Layout
 

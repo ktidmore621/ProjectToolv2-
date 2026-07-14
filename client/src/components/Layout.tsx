@@ -3,9 +3,10 @@ import { NavLink, Outlet } from "react-router-dom";
 import { IS_DEMO } from "../api";
 import { useSession } from "../state";
 import accioLogo from "../assets/accio-logo.png";
+import { HomeIcon } from "./icons";
 
-const NAV = [
-  { to: "/", label: "Dashboard", icon: "▦", end: true },
+const NAV: { to: string; label: string; icon: React.ReactNode; end?: boolean }[] = [
+  { to: "/", label: "Home", icon: <HomeIcon size={15} className="inline-block" />, end: true },
   { to: "/projects", label: "Projects", icon: "▤" },
   { to: "/timecard", label: "My Timecard", icon: "◷" },
   { to: "/team-timecard", label: "Team Timecard", icon: "◫" },

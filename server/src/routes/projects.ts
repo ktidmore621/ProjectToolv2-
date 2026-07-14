@@ -291,8 +291,7 @@ tasks.get("/", (req, res) => {
 
   let sql = `SELECT t.*, p.project_code, p.mcp_name, p.assignee_id AS project_assignee_id FROM project_tasks t
              JOIN projects p ON p.id = t.project_id
-             WHERE t.conditional_pending = 0
-               AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`;
+             WHERE p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`;
   const params: any[] = [...closedStatusIds];
   if (project_id) { sql += " AND t.project_id = ?"; params.push(Number(project_id)); }
   if (status_id) { sql += " AND t.status_id = ?"; params.push(Number(status_id)); }
@@ -353,8 +352,8 @@ tasks.delete("/:id", (req, res) => {
 
 /**
  * Task status change — Kanban drag or detail view share this endpoint so rules
- * are enforced consistently (§4.2): skip-requires-reason, decision prompt,
- * soft out-of-order warning.
+ * are enforced consistently (§4.2): skip-requires-reason, soft out-of-order
+ * warning.
  */
 tasks.post("/:id/status", (req, res) => {
   const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
@@ -362,8 +361,8 @@ tasks.post("/:id/status", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
 
-  const { status_id, user_id, skip_reason, decision } = req.body as {
-    status_id: number; user_id: number; skip_reason?: string; decision?: "yes" | "no";
+  const { status_id, user_id, skip_reason } = req.body as {
+    status_id: number; user_id: number; skip_reason?: string;
   };
   const target = valueById(status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
@@ -379,38 +378,13 @@ tasks.post("/:id/status", (req, res) => {
       return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
   }
 
-  // Decision task (§4.4): completing it requires a yes/no answer
-  let decisionNote = "";
-  if (t.is_decision && target.maps_to === "complete") {
-    if (decision !== "yes" && decision !== "no")
-      return res.status(422).json({ error: "Answer the decision: is an action plan needed?", needs_decision: true });
-    if (decision === "yes") {
-      const notStarted = valueByMapsTo("Task Status", "not_started")!;
-      const pending = db
-        .prepare("SELECT * FROM project_tasks WHERE project_id = ? AND conditional_pending = 1")
-        .all(p.id) as any[];
-      const today = new Date();
-      for (const c of pending) {
-        const tpl = db.prepare("SELECT due_offset FROM template_tasks WHERE id = ?").get(c.template_task_id) as any;
-        const due = new Date(today);
-        due.setDate(due.getDate() + (tpl?.due_offset ?? 7));
-        db.prepare("UPDATE project_tasks SET conditional_pending = 0, status_id = ?, due_date = ? WHERE id = ?")
-          .run(notStarted.id, due.toISOString().slice(0, 10), c.id);
-      }
-      decisionNote = pending.length ? ` — action plan needed: ${pending.length} action-plan task(s) generated` : " — action plan needed";
-    } else {
-      db.prepare("DELETE FROM project_tasks WHERE project_id = ? AND conditional_pending = 1").run(p.id);
-      decisionNote = " — no action plan needed";
-    }
-  }
-
   // Soft warning (§4.2): completing while an earlier required task is open
   let warning: string | null = null;
   if (DONE_TASK_KEYS.includes(target.maps_to ?? "")) {
     const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
     const earlier = db
       .prepare(
-        `SELECT name FROM project_tasks WHERE project_id = ? AND required = 1 AND conditional_pending = 0
+        `SELECT name FROM project_tasks WHERE project_id = ? AND required = 1
            AND step_order < ? AND id != ? AND status_id NOT IN (${doneIds.map(() => "?").join(",")}) LIMIT 1`
       )
       .get(p.id, t.step_order, t.id, ...doneIds) as { name: string } | undefined;
@@ -430,7 +404,7 @@ tasks.post("/:id/status", (req, res) => {
   logActivity({
     project_id: p.id, project_task_id: t.id, user_id, kind: "status_change",
     note: `changed "${t.name}" from ${old?.label} to ${target.label}` +
-      (target.maps_to === "skipped" && skip_reason ? ` — reason: ${skip_reason}` : "") + decisionNote,
+      (target.maps_to === "skipped" && skip_reason ? ` — reason: ${skip_reason}` : ""),
     old_status: old?.label, new_status: target.label,
   });
   res.json({ task: serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)), warning });

@@ -143,29 +143,28 @@ export function seed() {
   const tplId = db
     .prepare(
       `INSERT INTO workflow_templates (name, description, is_default, is_active, created_by)
-       VALUES ('Standard MCP Engagement', 'Default customer assignment workflow: analysis, visit, conditional action plan, closure.', 1, 1, ?)`
+       VALUES ('Standard MCP Engagement', 'Default customer assignment workflow: analysis, visit, action plan, closure.', 1, 1, ?)`
     )
     .run(users[0]).lastInsertRowid as number;
 
   const insTT = db.prepare(
     `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset,
-       default_priority_id, can_edit, can_skip, is_decision, generation)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       default_priority_id, can_edit, can_skip)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const tts: [string, string, number, number, number, number, number, number, string][] = [
-    // name, description, required, due_offset, priority, can_skip, is_decision, ---, generation
-    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0, 0, 1, "standard"],
-    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0, 0, 1, "standard"],
-    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1, 0, 1, "standard"],
-    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1, 0, 1, "standard"],
-    ["Determine if action plan is needed", "Decision point: does this MCP need a formal action plan?", 1, 18, prio("medium"), 0, 1, 1, "standard"],
-    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0, 0, 1, "action_plan"],
-    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0, 0, 1, "action_plan"],
-    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0, 0, 1, "standard"],
-    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0, 0, 1, "standard"],
+  const tts: [string, string, number, number, number, number, number][] = [
+    // name, description, required, due_offset, priority, can_skip, can_edit
+    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0, 1],
+    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0, 1],
+    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1, 1],
+    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1, 1],
+    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0, 1],
+    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0, 1],
+    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0, 1],
+    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0, 1],
   ];
-  tts.forEach(([name, desc, req, offset, prioId, canSkip, isDecision, canEdit, generation], i) =>
-    insTT.run(tplId, i + 1, name, desc, req, offset, prioId, canEdit, canSkip, isDecision, generation)
+  tts.forEach(([name, desc, req, offset, prioId, canSkip, canEdit], i) =>
+    insTT.run(tplId, i + 1, name, desc, req, offset, prioId, canEdit, canSkip)
   );
 
   // ---- Field requirement rules (§5.3) ----
@@ -181,7 +180,7 @@ export function seed() {
   insFR.run("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   insFR.run("project", "assignment_date", "Assignment Date", 1, 1, "always");
   // Configurable
-  insFR.run("project", "target_date", "Target Date", 0, 0, "creation");
+  insFR.run("project", "target_date", "Estimated Completion Date", 0, 0, "creation");
   insFR.run("project", "risk_level_id", "Risk Level", 0, 0, "creation");
   insFR.run("project", "final_summary", "Final Summary", 0, 1, "closure");
   insFR.run("project", "close_reason_id", "Close Reason", 0, 1, "closure");
@@ -247,7 +246,7 @@ export function seed() {
       ["assignee_name", "Assignee", 1, 0],
       ["annualized_premium", "AP", 1, 0],
       ["assignment_date", "Assignment Date", 1, 0],
-      ["target_date", "Target Date", 1, 0],
+      ["target_date", "Estimated Completion Date", 1, 0],
       ["risk_label", "Risk Level", 1, 0],
     ],
   };
@@ -344,18 +343,9 @@ function seedDemo(users: number[], tplId: number) {
     generateTasksFromTemplate(pid, tplId, assigned, d.assignee);
     logActivity({ project_id: pid, user_id: d.assignee, kind: "system", note: `Project ${code} created for ${d.mcp[1]}` });
 
-    const tasks = db
-      .prepare("SELECT * FROM project_tasks WHERE project_id = ? ORDER BY step_order")
-      .all(pid) as any[];
-    const visible = tasks.filter((t) => !t.conditional_pending);
     const completeN = d.completeThrough ?? 0;
-
-    if (completeN >= 5 || isClosed) {
-      // decision answered Yes → activate conditional action-plan tasks
-      db.prepare("UPDATE project_tasks SET conditional_pending = 0 WHERE project_id = ? AND conditional_pending = 1").run(pid);
-    }
     const allTasks = db
-      .prepare("SELECT * FROM project_tasks WHERE project_id = ? AND conditional_pending = 0 ORDER BY step_order")
+      .prepare("SELECT * FROM project_tasks WHERE project_id = ? ORDER BY step_order")
       .all(pid) as any[];
 
     let done = 0;

@@ -84,8 +84,8 @@ function WorkingAs() {
   return (
     <Card className="max-w-4xl p-4">
       <p className="mb-3 text-sm text-muted">
-        These users can access the system and appear in every assignment dropdown. <b>Dashboard Default</b> controls
-        whether their dashboard opens scoped to their own items or to everything; <b>Default Assignee Filter</b> is the
+        These users can access the system and appear in every assignment dropdown. <b>Home Default</b> controls
+        whether their Home page opens scoped to their own items or to everything; <b>Default Assignee Filter</b> is the
         assignee pre-applied on the Project List, Kanban Board and Task List (they can still change it there);
         <b> Show Configuration</b> controls whether this Configuration page is visible to them.
       </p>
@@ -93,7 +93,7 @@ function WorkingAs() {
         <thead>
           <tr className="border-b border-hairline text-left text-xs font-semibold text-muted">
             <th className="py-2 pr-3">User</th>
-            <th className="py-2 pr-3">Dashboard Default</th>
+            <th className="py-2 pr-3">Home Default</th>
             <th className="py-2 pr-3">Default Assignee Filter</th>
             <th className="py-2">Show Configuration</th>
           </tr>
@@ -110,7 +110,7 @@ function WorkingAs() {
               </td>
               <td className="py-2 pr-3">
                 <select className={inputCls + " !w-auto"} value={u.dashboard_scope ?? "mine"}
-                  aria-label={`Dashboard default for ${u.name}`}
+                  aria-label={`Home default for ${u.name}`}
                   onChange={(e) => patchUser(u, { dashboard_scope: e.target.value })}>
                   <option value="mine">My Items Only</option>
                   <option value="all">Show All</option>
@@ -120,7 +120,7 @@ function WorkingAs() {
                 <select className={inputCls + " !w-auto"} value={u.default_assignee_filter ?? ""}
                   aria-label={`Default assignee filter for ${u.name}`}
                   onChange={(e) => patchUser(u, { default_assignee_filter: e.target.value || null })}>
-                  <option value="">Match dashboard default</option>
+                  <option value="">Match Home default</option>
                   <option value="all">Everyone (no filter)</option>
                   {users.map((x) => <option key={x.id} value={String(x.id)}>{x.name}</option>)}
                 </select>
@@ -342,8 +342,6 @@ function Templates() {
                   <Mono className="w-6 text-muted">{i + 1}</Mono>
                   <span className="font-medium">{t.name}</span>
                   {!!t.required && <span className="rounded bg-primary-soft px-1.5 py-px text-[10px] font-semibold uppercase text-primary">required</span>}
-                  {!!t.is_decision && <span className="rounded bg-accent-soft px-1.5 py-px text-[10px] font-semibold uppercase text-accent">decision</span>}
-                  {t.generation === "action_plan" && <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase text-muted">conditional</span>}
                   <span className="ml-auto flex items-center gap-1.5 text-xs text-muted">
                     due +<Mono>{t.due_offset}</Mono>d
                     <Btn small kind="ghost" onClick={() => setEditTask(t)}>Edit</Btn>
@@ -358,15 +356,10 @@ function Templates() {
           <Card className="p-4">
             <h3 className="mb-2 text-sm font-semibold">Live preview — tasks a new project gets</h3>
             <ol className="list-inside list-decimal space-y-1 text-sm text-muted">
-              {tpl.tasks.filter((t: any) => t.generation === "standard").map((t: any) => (
-                <li key={t.id}>{t.name}{t.required ? " · required" : ""}{t.is_decision ? " · decision point" : ""} · due +{t.due_offset}d</li>
+              {tpl.tasks.map((t: any) => (
+                <li key={t.id}>{t.name}{t.required ? " · required" : ""} · due +{t.due_offset}d</li>
               ))}
             </ol>
-            {tpl.tasks.some((t: any) => t.generation === "action_plan") && (
-              <p className="mt-2 text-xs italic text-muted">
-                + {tpl.tasks.filter((t: any) => t.generation === "action_plan").length} conditional action-plan task(s), generated only when the decision point answers Yes.
-              </p>
-            )}
           </Card>
         </div>
       )}
@@ -417,7 +410,7 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
     name: task.name ?? "", description: task.description ?? "",
     required: !!(task.required ?? 1), due_offset: task.due_offset ?? 7,
     default_priority_id: task.default_priority_id ?? "", can_edit: !!(task.can_edit ?? 1),
-    can_skip: !!(task.can_skip ?? 0), generation: task.generation ?? "standard",
+    can_skip: !!(task.can_skip ?? 0),
   });
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -451,10 +444,6 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} /> Required</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_edit} onChange={(e) => setForm({ ...form, can_edit: e.target.checked })} /> User can edit name</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_skip} onChange={(e) => setForm({ ...form, can_skip: e.target.checked })} /> User can skip without reason</label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={form.generation === "action_plan"} onChange={(e) => setForm({ ...form, generation: e.target.checked ? "action_plan" : "standard" })} />
-            Conditional (action plan)
-          </label>
         </div>
         <div className="flex justify-end gap-2"><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" type="submit">{isNew ? "Add task" : "Save"}</Btn></div>
       </form>
@@ -699,7 +688,7 @@ const SAMPLE_TASK: Task = {
   id: 0, project_id: 0, name: "Complete billing analysis", description: "", task_type: "standard", step_order: 2,
   assigned_to: 0, assigned_to_name: "Morgan Hale", due_date: "2026-07-09",
   status_id: 0, status_label: "In Progress", status_color: "#12808A", status_key: "in_progress",
-  priority_id: 0, priority_label: "High", priority_color: "#C2554E", required: 1, is_decision: 0,
+  priority_id: 0, priority_label: "High", priority_color: "#C2554E", required: 1,
   notes: "", skip_reason: null, completed_date: null, completed_by_name: null,
   activity_count: 2, note_count: 1,
   latest_note: { note: "Waiting on the customer's usage export.", activity_date: "2026-07-08 14:00:00", user_name: "Morgan Hale" },
