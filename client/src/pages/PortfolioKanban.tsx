@@ -7,7 +7,7 @@ import { inputCls, ragEdge, Skeleton } from "../components/ui";
 import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Portfolio Kanban — v1's standalone screen, now a view state inside Projects (v2 §1). */
-export function PortfolioKanbanView() {
+export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) {
   const { activeValues } = useConfig();
   const { users, currentUser } = useSession();
   const toast = useToast();
@@ -74,6 +74,7 @@ export function PortfolioKanbanView() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
+          {toolbar}
           <select className={inputCls + " !w-auto"} value={assignee} aria-label="Filter by assignee"
             onChange={(e) => setAssignee(e.target.value)}>
             <option value="">All assignees</option>

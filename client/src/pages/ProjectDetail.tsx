@@ -29,7 +29,6 @@ export function ProjectDetail() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [showRag, setShowRag] = useState(false);
   const [skipTask, setSkipTask] = useState<{ task: Task; statusId: number } | null>(null);
-  const [decisionTask, setDecisionTask] = useState<{ task: Task; statusId: number } | null>(null);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
   const [highlightActivity, setHighlightActivity] = useState<number | null>(null);
@@ -58,7 +57,7 @@ export function ProjectDetail() {
   }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Shared task status change — same rules from list, kanban, or dropdown (§4.2). */
-  async function changeTaskStatus(task: Task, statusId: number, extra?: { skip_reason?: string; decision?: "yes" | "no" }) {
+  async function changeTaskStatus(task: Task, statusId: number, extra?: { skip_reason?: string }) {
     try {
       const r = await api.post(`/api/tasks/${task.id}/status`, { status_id: statusId, user_id: currentUser?.id, ...extra });
       if (r.warning) toast(r.warning, "warning");
@@ -67,7 +66,6 @@ export function ProjectDetail() {
       return true;
     } catch (err) {
       if (err instanceof ApiError && err.body?.needs_skip_reason) { setSkipTask({ task, statusId }); return false; }
-      if (err instanceof ApiError && err.body?.needs_decision) { setDecisionTask({ task, statusId }); return false; }
       toast(err instanceof Error ? err.message : "Update failed", "error");
       return false;
     }
@@ -237,17 +235,6 @@ export function ProjectDetail() {
           }}
         />
       )}
-      {decisionTask && (
-        <DecisionModal
-          task={decisionTask.task}
-          onCancel={() => setDecisionTask(null)}
-          onAnswer={async (decision) => {
-            const ok = await changeTaskStatus(decisionTask.task, decisionTask.statusId, { decision });
-            if (ok) toast(decision === "yes" ? "Action-plan tasks generated." : "No action plan — conditional tasks removed.", "info");
-            setDecisionTask(null);
-          }}
-        />
-      )}
     </Page>
   );
 }
@@ -349,7 +336,7 @@ function EditProjectModal({ project, onClose, onSaved }: { project: Project; onC
           <input type="number" min="0" step="0.01" className={inputCls} required value={form.annualized_premium}
             onChange={(e) => setForm({ ...form, annualized_premium: e.target.value })} placeholder="e.g. 12500.00" />
         </Field>
-        <Field label="Target date">
+        <Field label="Estimated completion date">
           <input type="date" className={inputCls} value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} />
         </Field>
         <Field label="Risk level">
@@ -569,19 +556,6 @@ export function SkipModal({ task, onCancel, onConfirm }: { task: Task; onCancel:
       <div className="mt-4 flex justify-end gap-2">
         <Btn onClick={onCancel}>Cancel</Btn>
         <Btn kind="primary" onClick={() => onConfirm(reason)} disabled={!reason.trim()}>Skip task</Btn>
-      </div>
-    </Modal>
-  );
-}
-
-export function DecisionModal({ task, onCancel, onAnswer }: { task: Task; onCancel: () => void; onAnswer: (d: "yes" | "no") => void }) {
-  return (
-    <Modal title="Decision point" onClose={onCancel}>
-      <p className="mb-4 text-sm">Completing "<b>{task.name}</b>" — does this customer need an action plan? Answering <b>Yes</b> generates the action-plan tasks from the template; <b>No</b> removes them (§4.4).</p>
-      <div className="flex justify-end gap-2">
-        <Btn onClick={onCancel}>Cancel</Btn>
-        <Btn onClick={() => onAnswer("no")}>No action plan</Btn>
-        <Btn kind="primary" onClick={() => onAnswer("yes")}>Yes — generate action plan</Btn>
       </div>
     </Modal>
   );

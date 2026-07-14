@@ -6,7 +6,7 @@ import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from
 import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Active-projects table — the default view state inside Projects (v2 §1). */
-export function ProjectListView() {
+export function ProjectListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const { users } = useSession();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [q, setQ] = useState("");
@@ -35,6 +35,7 @@ export function ProjectListView() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
+        {toolbar}
         <input className={inputCls + " !w-56"} placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
         <select className={inputCls + " !w-auto"} value={assignee} aria-label="Filter by assignee"
           onChange={(e) => setAssignee(e.target.value)}>
@@ -154,7 +155,7 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
             onChange={(e) => setForm({ ...form, annualized_premium: e.target.value })} placeholder="e.g. 12500.00" />
         </Field>
         <Field label="Assignment date"><input type="date" className={inputCls} required value={form.assignment_date} onChange={(e) => setForm({ ...form, assignment_date: e.target.value })} /></Field>
-        <Field label="Target date (optional)"><input type="date" className={inputCls} value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} /></Field>
+        <Field label="Estimated completion date (optional)"><input type="date" className={inputCls} value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} /></Field>
         <Field label="Risk level">
           <select className={inputCls} value={form.risk_level_id} onChange={(e) => setForm({ ...form, risk_level_id: e.target.value })}>
             <option value="">—</option>
@@ -171,12 +172,9 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
           <div className="col-span-2 rounded-lg bg-canvas p-3">
             <div className="mb-1.5 text-xs font-semibold text-muted">This template will generate:</div>
             <ol className="list-inside list-decimal space-y-0.5 text-xs text-muted">
-              {selectedTpl.tasks.filter((t: any) => t.generation === "standard").map((t: any) => (
-                <li key={t.id}>{t.name}{t.required ? " · required" : ""}{t.is_decision ? " · decision point" : ""}</li>
+              {selectedTpl.tasks.map((t: any) => (
+                <li key={t.id}>{t.name}{t.required ? " · required" : ""}</li>
               ))}
-              {selectedTpl.tasks.some((t: any) => t.generation === "action_plan") && (
-                <li className="list-none pt-1 italic">+ {selectedTpl.tasks.filter((t: any) => t.generation === "action_plan").length} action-plan tasks if the decision point answers Yes</li>
-              )}
             </ol>
           </div>
         )}

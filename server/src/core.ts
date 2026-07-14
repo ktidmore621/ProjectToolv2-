@@ -233,10 +233,8 @@ function addDays(iso: string, days: number): string {
 
 /**
  * Generate project tasks from a template (snapshot at creation — later template
- * edits never touch this project). Conditional action-plan tasks are copied too,
- * but hidden behind conditional_pending until the decision task answers Yes.
- * Every generated task (including conditional ones activated later) starts
- * assigned to the project assignee.
+ * edits never touch this project). Every generated task starts assigned to the
+ * project assignee.
  */
 export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string, assigneeId: number | null = null) {
   const notStarted = valueByMapsTo("Task Status", "not_started");
@@ -245,25 +243,21 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
     .all(templateId) as any[];
   const ins = db.prepare(
     `INSERT INTO project_tasks (project_id, template_task_id, name, description, task_type, step_order,
-        assigned_to, due_date, status_id, priority_id, required, is_decision, conditional_pending)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        assigned_to, due_date, status_id, priority_id, required)
+     VALUES (?, ?, ?, ?, 'standard', ?, ?, ?, ?, ?, ?)`
   );
   for (const t of tasks) {
-    const conditional = t.generation === "action_plan" ? 1 : 0;
     ins.run(
       projectId,
       t.id,
       t.name,
       t.description ?? "",
-      conditional ? "action_plan" : "standard",
       t.step_order,
       assigneeId,
-      conditional ? null : addDays(assignmentDate, t.due_offset),
+      addDays(assignmentDate, t.due_offset),
       notStarted!.id,
       t.default_priority_id ?? null,
-      t.required,
-      t.is_decision,
-      conditional
+      t.required
     );
   }
 }
@@ -277,7 +271,7 @@ export function closureProblems(projectId: number, body: { final_summary?: strin
   const open = db
     .prepare(
       `SELECT name FROM project_tasks
-       WHERE project_id = ? AND required = 1 AND conditional_pending = 0
+       WHERE project_id = ? AND required = 1
          AND status_id NOT IN (${doneIds.map(() => "?").join(",")})`
     )
     .all(projectId, ...doneIds) as { name: string }[];
@@ -318,7 +312,7 @@ export function computeRag(project: any): { rag: "red" | "amber" | "green"; reas
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
 
   const tasks = db
-    .prepare("SELECT * FROM project_tasks WHERE project_id = ? AND conditional_pending = 0")
+    .prepare("SELECT * FROM project_tasks WHERE project_id = ?")
     .all(project.id) as any[];
   const openTasks = tasks.filter((t) => !doneIds.includes(t.status_id));
 
@@ -333,7 +327,7 @@ export function computeRag(project: any): { rag: "red" | "amber" | "green"; reas
       return { rag: "red", reason: `Required task "${t.name}" overdue ${daysBetween(t.due_date, today)}d`, overridden: false };
   }
   if (project.target_date && project.target_date < today)
-    return { rag: "red", reason: "Project target date missed", overridden: false };
+    return { rag: "red", reason: "Estimated completion date missed", overridden: false };
 
   for (const t of openTasks) {
     if (t.due_date && t.due_date >= today && daysBetween(today, t.due_date) <= amberDue)
@@ -367,7 +361,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
     .map((v) => v.id);
   const taskRows = db
-    .prepare("SELECT * FROM project_tasks WHERE project_id = ? AND conditional_pending = 0 ORDER BY step_order, id")
+    .prepare("SELECT * FROM project_tasks WHERE project_id = ? ORDER BY step_order, id")
     .all(p.id) as any[];
   const openTasks = taskRows.filter((t) => !doneIds.includes(t.status_id));
   const nextDue = openTasks

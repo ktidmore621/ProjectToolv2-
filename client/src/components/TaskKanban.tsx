@@ -7,7 +7,7 @@ import { renderTaskField, useLayout } from "./fields";
 /**
  * Project Task Kanban (§6.2). Columns = Task Status. Cards move between columns
  * but can't be reordered within one — preserving the no-reorder rule for
- * template tasks. Skip/decision prompts are handled by the parent via onMove.
+ * template tasks. Skip prompts are handled by the parent via onMove.
  */
 export function TaskKanban({ tasks, readOnly, onMove }: {
   tasks: Task[];

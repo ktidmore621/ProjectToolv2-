@@ -2,8 +2,8 @@
  * In-browser "server" for the standalone demo build — a faithful port of the
  * Express routes in server/src/routes/*. Every business rule (one active
  * project per MCP, closure requirements, skip-requires-reason, soft warnings,
- * conditional action-plan generation, RAG engine, deactivate-not-delete)
- * behaves identically; the data just lives in this browser.
+ * RAG engine, deactivate-not-delete) behaves identically; the data just
+ * lives in this browser.
  */
 import {
   db, generateTasksFromTemplate, logActivity, nextId, now, resetDemoData, Row,
@@ -43,7 +43,7 @@ function computeRag(p: Row): { rag: string; reason: string; overridden: boolean 
   const t = today();
   const done = doneStatusIds();
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
-  const tasks = db.project_tasks.filter((x) => x.project_id === p.id && !x.conditional_pending);
+  const tasks = db.project_tasks.filter((x) => x.project_id === p.id);
   const open = tasks.filter((x) => !done.includes(x.status_id));
 
   if (blockedId && open.some((x) => x.status_id === blockedId))
@@ -52,7 +52,7 @@ function computeRag(p: Row): { rag: string; reason: string; overridden: boolean 
     if (x.required && x.due_date && daysBetween(x.due_date, t) >= redOverdue)
       return { rag: "red", reason: `Required task "${x.name}" overdue ${daysBetween(x.due_date, t)}d`, overridden: false };
   if (p.target_date && p.target_date < t)
-    return { rag: "red", reason: "Project target date missed", overridden: false };
+    return { rag: "red", reason: "Estimated completion date missed", overridden: false };
   for (const x of open) {
     if (x.due_date && x.due_date >= t && daysBetween(t, x.due_date) <= amberDue)
       return { rag: "amber", reason: `Task "${x.name}" due within ${amberDue}d`, overridden: false };
@@ -240,7 +240,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
   const ragVal = valueByMapsTo("RAG Status", rag.rag);
   const done = doneStatusIds();
   const taskRows = db.project_tasks
-    .filter((t) => t.project_id === p.id && !t.conditional_pending)
+    .filter((t) => t.project_id === p.id)
     .sort((a, b) => a.step_order - b.step_order || a.id - b.id);
   const open = taskRows.filter((t) => !done.includes(t.status_id));
   const nextDue = open.filter((t) => t.due_date).sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
@@ -273,7 +273,7 @@ function closureProblems(projectId: number, body: { final_summary?: string | nul
   const problems: string[] = [];
   const done = doneStatusIds();
   for (const t of db.project_tasks)
-    if (t.project_id === projectId && t.required && !t.conditional_pending && !done.includes(t.status_id))
+    if (t.project_id === projectId && t.required && !done.includes(t.status_id))
       problems.push(`Required task not complete: "${t.name}"`);
   for (const r of db.field_requirements)
     if (r.object_type === "project" && r.required && ["closure", "always"].includes(r.required_at)) {
@@ -539,7 +539,6 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
     required: b.required ? 1 : 0, due_offset: b.due_offset ?? 7,
     default_priority_id: b.default_priority_id ?? null,
     can_edit: b.can_edit === false || b.can_edit === 0 ? 0 : 1, can_skip: b.can_skip ? 1 : 0,
-    is_decision: 0, generation: b.generation === "action_plan" ? "action_plan" : "standard",
   };
   db.template_tasks.push(t);
   return ok(t, 201);
@@ -547,14 +546,13 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
 route("PATCH", "/api/template-tasks/:id", (m, _q, b) => {
   const t = db.template_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Template task not found");
-  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "can_skip", "step_order", "generation"])
+  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "can_skip", "step_order"])
     if (f in b) t[f] = b[f];
   return ok(t);
 });
 route("DELETE", "/api/template-tasks/:id", (m) => {
   const t = db.template_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Template task not found");
-  if (t.is_decision) return err(400, "The decision-point task can't be removed while action-plan tasks depend on it");
   db.template_tasks = db.template_tasks.filter((x) => x.id !== t.id);
   return ok({ ok: true });
 });
@@ -782,7 +780,7 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
     id: nextId(), project_id: p.id, template_task_id: null, name: b.name.trim(), description: b.description ?? "",
     task_type: "adhoc", step_order: max + 1, assigned_to: b.assigned_to ?? null, due_date: b.due_date ?? null,
     status_id: valueByMapsTo("Task Status", "not_started")!.id, priority_id: b.priority_id ?? null,
-    required: b.required ? 1 : 0, is_decision: 0, conditional_pending: 0,
+    required: b.required ? 1 : 0,
     notes: "", skip_reason: null, completed_date: null, completed_by: null,
   };
   db.project_tasks.push(t);
@@ -800,7 +798,6 @@ route("GET", "/api/tasks", (_m, q) => {
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
   const t = today();
   let out = db.project_tasks
-    .filter((x) => !x.conditional_pending)
     .filter((x) => {
       const p = db.projects.find((pp) => pp.id === x.project_id);
       return p && !closedIds.includes(p.status_id);
@@ -869,33 +866,11 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   if (target.maps_to === "skipped" && t.required && !b.skip_reason?.trim())
     return err(422, "Skipping a required task needs a reason", { needs_skip_reason: true });
 
-  let decisionNote = "";
-  if (t.is_decision && target.maps_to === "complete") {
-    if (b.decision !== "yes" && b.decision !== "no")
-      return err(422, "Answer the decision: is an action plan needed?", { needs_decision: true });
-    const pending = db.project_tasks.filter((x) => x.project_id === p.id && x.conditional_pending);
-    if (b.decision === "yes") {
-      const notStarted = valueByMapsTo("Task Status", "not_started")!;
-      for (const c of pending) {
-        const tpl = db.template_tasks.find((x) => x.id === c.template_task_id);
-        const due = new Date();
-        due.setDate(due.getDate() + (tpl?.due_offset ?? 7));
-        c.conditional_pending = 0;
-        c.status_id = notStarted.id;
-        c.due_date = due.toISOString().slice(0, 10);
-      }
-      decisionNote = pending.length ? ` — action plan needed: ${pending.length} action-plan task(s) generated` : " — action plan needed";
-    } else {
-      db.project_tasks = db.project_tasks.filter((x) => !(x.project_id === p.id && x.conditional_pending));
-      decisionNote = " — no action plan needed";
-    }
-  }
-
   let warning: string | null = null;
   if (DONE_TASK_KEYS.includes(target.maps_to ?? "")) {
     const done = doneStatusIds();
     const earlier = db.project_tasks.find(
-      (x) => x.project_id === p.id && x.required && !x.conditional_pending &&
+      (x) => x.project_id === p.id && x.required &&
         x.step_order < t.step_order && x.id !== t.id && !done.includes(x.status_id)
     );
     if (earlier) warning = `Heads up: earlier required task "${earlier.name}" is still open.`;
@@ -909,7 +884,7 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   logActivity({
     project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "status_change",
     note: `changed "${t.name}" from ${old?.label} to ${target.label}` +
-      (target.maps_to === "skipped" && b.skip_reason ? ` — reason: ${b.skip_reason}` : "") + decisionNote,
+      (target.maps_to === "skipped" && b.skip_reason ? ` — reason: ${b.skip_reason}` : ""),
     old_status: old?.label, new_status: target.label,
   });
   return ok({ task: serializeTask(t), warning });
@@ -1125,7 +1100,7 @@ route("GET", "/api/dashboard", (_m, q) => {
   const yesterday = addDaysIso(t, -1);
   const weekAgo = addDaysIso(t, -7);
   const openTasks = db.project_tasks
-    .filter((x) => !x.conditional_pending && !done.includes(x.status_id))
+    .filter((x) => !done.includes(x.status_id))
     .filter((x) => {
       const p = db.projects.find((pp) => pp.id === x.project_id);
       return p && !closedIds.includes(p.status_id);
@@ -1170,7 +1145,7 @@ route("GET", "/api/dashboard", (_m, q) => {
   const nowStamp = nowDate.toISOString().slice(0, 16).replace("T", " ");
 
   const weekTasks = db.project_tasks.filter((x) => {
-    if (x.conditional_pending || !x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
+    if (!x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
     if (mine && !taskIsMine(x)) return false;
     const p = db.projects.find((pp) => pp.id === x.project_id);
     return p && !closedIds.includes(p.status_id);

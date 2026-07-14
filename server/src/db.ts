@@ -60,9 +60,7 @@ CREATE TABLE IF NOT EXISTS template_tasks (
   due_offset INTEGER NOT NULL DEFAULT 7,      -- days after assignment date
   default_priority_id INTEGER REFERENCES picklist_values(id),
   can_edit INTEGER NOT NULL DEFAULT 1,
-  can_skip INTEGER NOT NULL DEFAULT 0,
-  is_decision INTEGER NOT NULL DEFAULT 0,     -- 'Action Plan Needed?' decision point
-  generation TEXT NOT NULL DEFAULT 'standard' -- 'standard' | 'action_plan' (conditional)
+  can_skip INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -100,8 +98,6 @@ CREATE TABLE IF NOT EXISTS project_tasks (
   status_id INTEGER NOT NULL REFERENCES picklist_values(id),
   priority_id INTEGER REFERENCES picklist_values(id),
   required INTEGER NOT NULL DEFAULT 0,
-  is_decision INTEGER NOT NULL DEFAULT 0,
-  conditional_pending INTEGER NOT NULL DEFAULT 0, -- snapshot of conditional template tasks, hidden until activated
   notes TEXT DEFAULT '',
   skip_reason TEXT,
   completed_date TEXT,
@@ -220,6 +216,20 @@ ensureColumn("users", "dashboard_scope", "TEXT NOT NULL DEFAULT 'mine'");
 ensureColumn("users", "default_assignee_filter", "TEXT");
 ensureColumn("users", "show_configuration", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("projects", "annualized_premium", "REAL");
+
+// Decision-point mechanism removed: databases seeded before the removal may
+// still hold hidden conditional tasks (conditional_pending = 1). They were
+// never activated, so they're deleted; the legacy columns themselves stay on
+// old databases where their defaults are harmless.
+{
+  const cols = db.prepare("PRAGMA table_info(project_tasks)").all() as { name: string }[];
+  if (cols.some((c) => c.name === "conditional_pending"))
+    db.prepare("DELETE FROM project_tasks WHERE conditional_pending = 1").run();
+}
+
+// "Target Date" is now displayed as "Estimated Completion Date" (field key unchanged)
+db.prepare("UPDATE field_requirements SET label = 'Estimated Completion Date' WHERE field_name = 'target_date' AND label = 'Target Date'").run();
+db.prepare("UPDATE view_layout_fields SET label = 'Estimated Completion Date' WHERE field_key = 'target_date' AND label = 'Target Date'").run();
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_activities_task_date ON activities(project_task_id, activity_date);

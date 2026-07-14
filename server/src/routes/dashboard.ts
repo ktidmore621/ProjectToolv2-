@@ -49,8 +49,7 @@ dashboard.get("/", (req, res) => {
     .prepare(
       `SELECT t.*, p.project_code, p.mcp_name FROM project_tasks t
        JOIN projects p ON p.id = t.project_id
-       WHERE t.conditional_pending = 0
-         AND t.status_id NOT IN (${doneIds.map(() => "?").join(",")})
+       WHERE t.status_id NOT IN (${doneIds.map(() => "?").join(",")})
          AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`
     )
     .all(...doneIds, ...closedStatusIds) as any[];
@@ -99,7 +98,7 @@ dashboard.get("/", (req, res) => {
     .prepare(
       `SELECT t.*, p.mcp_name, p.project_code FROM project_tasks t
        JOIN projects p ON p.id = t.project_id
-       WHERE t.conditional_pending = 0 AND t.due_date >= ? AND t.due_date <= ?
+       WHERE t.due_date >= ? AND t.due_date <= ?
          AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`
     )
     .all(wkStart, wkEnd, ...closedStatusIds) as any[];

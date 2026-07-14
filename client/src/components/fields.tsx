@@ -113,7 +113,6 @@ export function renderTaskField(key: string, t: Task): React.ReactNode {
         <span className="font-medium">
           {t.name}
           {t.task_type === "adhoc" && <span className="ml-1.5 text-[10px] font-normal uppercase tracking-wide text-muted">ad-hoc</span>}
-          {t.task_type === "action_plan" && <span className="ml-1.5 text-[10px] font-normal uppercase tracking-wide text-accent">action plan</span>}
         </span>
       );
     case "status_label": return <Chip label={t.status_label} color={t.status_color} small />;

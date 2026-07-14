@@ -28,8 +28,9 @@ export interface DemoDB {
   seq: number;
 }
 
-// v3 bump: adds annualized_premium + custom fields; older stored data reseeds fresh
-const STORE_KEY = "cat_demo_db_v3";
+// v4 bump: decision-point/conditional action-plan mechanism removed and
+// "Target Date" relabeled; older stored data reseeds fresh
+const STORE_KEY = "cat_demo_db_v4";
 
 export let db: DemoDB = emptyDb();
 {
@@ -142,8 +143,8 @@ function addDays(iso: string, days: number): string {
 }
 
 /**
- * Snapshot the template into project tasks (conditional tasks hidden until the
- * decision). Every generated task starts assigned to the project assignee.
+ * Snapshot the template into project tasks. Every generated task starts
+ * assigned to the project assignee.
  */
 export function generateTasksFromTemplate(projectId: number, templateId: number, assignmentDate: string, assigneeId: number | null = null) {
   const notStarted = valueByMapsTo("Task Status", "not_started")!;
@@ -151,22 +152,19 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
     .filter((t) => t.template_id === templateId)
     .sort((a, b) => a.step_order - b.step_order);
   for (const t of tasks) {
-    const conditional = t.generation === "action_plan" ? 1 : 0;
     db.project_tasks.push({
       id: nextId(),
       project_id: projectId,
       template_task_id: t.id,
       name: t.name,
       description: t.description ?? "",
-      task_type: conditional ? "action_plan" : "standard",
+      task_type: "standard",
       step_order: t.step_order,
       assigned_to: assigneeId,
-      due_date: conditional ? null : addDays(assignmentDate, t.due_offset),
+      due_date: addDays(assignmentDate, t.due_offset),
       status_id: notStarted.id,
       priority_id: t.default_priority_id ?? null,
       required: t.required,
-      is_decision: t.is_decision,
-      conditional_pending: conditional,
       notes: "",
       skip_reason: null,
       completed_date: null,
@@ -261,25 +259,24 @@ function freshDb(): void {
   const tplId = nextId();
   db.workflow_templates.push({
     id: tplId, name: "Standard MCP Engagement",
-    description: "Default customer assignment workflow: analysis, visit, conditional action plan, closure.",
+    description: "Default customer assignment workflow: analysis, visit, action plan, closure.",
     is_default: 1, is_active: 1, created_by: users[0], created_date: now(),
   });
 
-  const tts: [string, string, number, number, number, number, number, string][] = [
-    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0, 0, "standard"],
-    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0, 0, "standard"],
-    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1, 0, "standard"],
-    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1, 0, "standard"],
-    ["Determine if action plan is needed", "Decision point: does this MCP need a formal action plan?", 1, 18, prio("medium"), 0, 1, "standard"],
-    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0, 0, "action_plan"],
-    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0, 0, "action_plan"],
-    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0, 0, "standard"],
-    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0, 0, "standard"],
+  const tts: [string, string, number, number, number, number][] = [
+    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0],
+    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0],
+    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1],
+    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1],
+    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0],
+    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0],
+    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0],
+    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0],
   ];
-  tts.forEach(([name, desc, required, due_offset, priorityId, can_skip, is_decision, generation], i) =>
+  tts.forEach(([name, desc, required, due_offset, priorityId, can_skip], i) =>
     db.template_tasks.push({
       id: nextId(), template_id: tplId, step_order: i + 1, name, description: desc,
-      required, due_offset, default_priority_id: priorityId, can_edit: 1, can_skip, is_decision, generation,
+      required, due_offset, default_priority_id: priorityId, can_edit: 1, can_skip,
     })
   );
 
@@ -291,7 +288,7 @@ function freshDb(): void {
   fr("project", "assignee_id", "Assignee", 1, 1, "always");
   fr("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   fr("project", "assignment_date", "Assignment Date", 1, 1, "always");
-  fr("project", "target_date", "Target Date", 0, 0, "creation");
+  fr("project", "target_date", "Estimated Completion Date", 0, 0, "creation");
   fr("project", "risk_level_id", "Risk Level", 0, 0, "creation");
   fr("project", "final_summary", "Final Summary", 0, 1, "closure");
   fr("project", "close_reason_id", "Close Reason", 0, 1, "closure");
@@ -324,7 +321,7 @@ function freshDb(): void {
     project_header: [
       ["mcp_name", "MCP Name", 1, 1], ["mcp_number", "MCP #", 1, 1], ["project_code", "Project ID", 1, 1],
       ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 1], ["assignee_name", "Assignee", 1, 0],
-      ["annualized_premium", "AP", 1, 0], ["assignment_date", "Assignment Date", 1, 0], ["target_date", "Target Date", 1, 0],
+      ["annualized_premium", "AP", 1, 0], ["assignment_date", "Assignment Date", 1, 0], ["target_date", "Estimated Completion Date", 1, 0],
       ["risk_label", "Risk Level", 1, 0],
     ],
   };
@@ -395,11 +392,8 @@ function seedDemoProjects(users: number[], tplId: number) {
     logActivity({ project_id: pid, user_id: d.assignee, kind: "system", note: `Project ${code} created for ${d.mcp[1]}` });
 
     const completeN = d.completeThrough ?? 0;
-    if (completeN >= 5 || isClosed) {
-      for (const t of db.project_tasks) if (t.project_id === pid && t.conditional_pending) t.conditional_pending = 0;
-    }
     const allTasks = db.project_tasks
-      .filter((t) => t.project_id === pid && !t.conditional_pending)
+      .filter((t) => t.project_id === pid)
       .sort((a, b) => a.step_order - b.step_order);
 
     let done = 0;

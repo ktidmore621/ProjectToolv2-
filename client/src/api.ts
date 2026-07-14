@@ -146,7 +146,7 @@ export interface Task {
   project_id: number;
   name: string;
   description: string;
-  task_type: "standard" | "adhoc" | "action_plan";
+  task_type: "standard" | "adhoc";
   step_order: number;
   assigned_to: number | null;
   assigned_to_name: string | null;
@@ -159,7 +159,6 @@ export interface Task {
   priority_label: string | null;
   priority_color: string | null;
   required: number;
-  is_decision: number;
   notes: string;
   skip_reason: string | null;
   completed_date: string | null;

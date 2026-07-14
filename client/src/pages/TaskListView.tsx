@@ -11,7 +11,7 @@ import { defaultAssigneeOf, useConfig, useSession } from "../state";
  * KPIs can deep-link straight into a pre-filtered view
  * (e.g. /projects?view=tasks&overdue=1).
  */
-export function TaskListView() {
+export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const [params, setParams] = useSearchParams();
   const { users, currentUser } = useSession();
   const { activeValues } = useConfig();
@@ -72,6 +72,7 @@ export function TaskListView() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
+        {toolbar}
         <button className={toggleCls(filters.overdue)} aria-pressed={filters.overdue} onClick={() => setFilter("overdue", !filters.overdue)}>
           Overdue
         </button>
