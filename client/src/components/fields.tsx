@@ -20,6 +20,7 @@ export function renderProjectField(key: string, p: Project): React.ReactNode {
   if (key.startsWith("cf_")) return renderCustomValue(p.custom?.[key]);
   switch (key) {
     case "mcp_name": return <span className="font-medium">{p.mcp_name}</span>;
+    case "project_name": return p.project_name ? <span>{p.project_name}</span> : <span className="text-muted">—</span>;
     case "mcp_number": return <Mono className="text-muted">{p.mcp_number}</Mono>;
     case "project_code": return <Mono className="text-muted">{p.project_code}</Mono>;
     case "assignee_name": return <span>{p.assignee_name}</span>;
@@ -54,13 +55,13 @@ export function renderCustomValue(v: CustomValue | undefined): React.ReactNode {
   }
 }
 
-/** All admin-defined project fields, active-only by default. */
-export function useCustomFields(activeOnly = true) {
+/** All admin-defined fields for one object type (E9: 'project' or 'task'), active-only by default. */
+export function useCustomFields(objectType: "project" | "task" = "project", activeOnly = true) {
   const [fields, setFields] = useState<CustomField[]>([]);
   useEffect(() => {
     api.get<CustomField[]>("/api/custom-fields").then(setFields).catch(() => setFields([]));
   }, []);
-  return activeOnly ? fields.filter((f) => f.is_active) : fields;
+  return fields.filter((f) => f.object_type === objectType && (!activeOnly || f.is_active));
 }
 
 /**
@@ -80,7 +81,7 @@ export function CustomFieldInputs({ fields, values, onChange }: {
           {f.field_type === "dropdown" ? (
             <select className={inputCls} value={values[f.field_key] ?? ""} onChange={(e) => onChange(f.field_key, e.target.value)}>
               <option value="">—</option>
-              {f.options.filter((o) => o.is_active || String(o.id) === values[f.field_key]).map((o) => (
+              {f.options.filter((o) => (o.is_active && !o.archived) || String(o.id) === values[f.field_key]).map((o) => (
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>
@@ -107,6 +108,7 @@ export function CustomFieldInputs({ fields, values, onChange }: {
 }
 
 export function renderTaskField(key: string, t: Task): React.ReactNode {
+  if (key.startsWith("cf_")) return renderCustomValue(t.custom?.[key]); // E9
   switch (key) {
     case "name":
       return (

@@ -20,7 +20,9 @@ const ok = (data: any, status = 200): Res => ({ status, data: clone(data) });
 const err = (status: number, error: string, extra: any = {}): Res => ({ status, data: { error, ...extra } });
 const clone = (x: any) => (x === undefined ? null : JSON.parse(JSON.stringify(x)));
 
-const today = () => new Date().toISOString().slice(0, 10);
+// E6: date-based determinations run on Central Time via the IANA zone (DST-aware)
+const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" });
+const today = () => CENTRAL_DATE.format(new Date());
 const daysBetween = (a: string, b: string) =>
   Math.floor((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
 const settingNum = (key: string, fallback: number) => {
@@ -28,6 +30,15 @@ const settingNum = (key: string, fallback: number) => {
   return Number.isFinite(n) ? n : fallback;
 };
 const userName = (id: number | null | undefined) => db.users.find((u) => u.id === id)?.name;
+
+/** B3: sequence-style project codes — never derived from the row count. */
+function nextProjectCode(): string {
+  const stored = Number(db.settings.project_code_seq ?? 0);
+  const maxExisting = Math.max(0, ...db.projects.map((p) => Number(String(p.project_code).slice(4)) || 0));
+  const next = Math.max(stored, maxExisting) + 1;
+  db.settings.project_code_seq = String(next);
+  return `CAP-${String(next).padStart(4, "0")}`;
+}
 const isClosedStatus = (statusId: number) => CLOSED_KEYS.includes(valueById(statusId)?.maps_to ?? "");
 const doneStatusIds = () => valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 const activeStatusIds = () => valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
@@ -82,6 +93,7 @@ function serializeTask(t: Row) {
     priority_color: priority?.color ?? null,
     assigned_to_name: userName(t.assigned_to) ?? null,
     completed_by_name: userName(t.completed_by) ?? null,
+    custom: serializeCustomValues("task", t.id), // E9
     activity_count: db.task_activity_links.filter((l) => l.project_task_id === t.id).length,
     note_count: taskNotes.length,
     latest_note: latest ? { note: latest.note, activity_date: latest.activity_date, user_name: userName(latest.user_id) ?? null } : null,
@@ -149,9 +161,15 @@ function parseCurrency(raw: unknown): number | null {
   return Number(String(raw).replace(/[$,\s]/g, ""));
 }
 
-const activeCustomFields = () =>
+// E9: one custom-field engine for projects and tasks
+type CustomObjectType = "project" | "task";
+const CUSTOM_VALUE_STORES: Record<CustomObjectType, { rows: () => Row[]; fk: string }> = {
+  project: { rows: () => db.project_custom_values, fk: "project_id" },
+  task: { rows: () => db.task_custom_values, fk: "task_id" },
+};
+const activeCustomFields = (objectType: CustomObjectType = "project") =>
   db.custom_fields
-    .filter((f) => f.object_type === "project" && f.is_active)
+    .filter((f) => f.object_type === objectType && f.is_active)
     .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
 
 function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
@@ -190,11 +208,11 @@ function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string |
   }
 }
 
-function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined) {
+function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined) {
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
-  for (const f of activeCustomFields()) {
+  for (const f of activeCustomFields(objectType)) {
     const r = parseCustomValue(f, bodyCustom?.[f.field_key]);
     if (r.ok) {
       parsed.set(f.id, r.value);
@@ -204,18 +222,20 @@ function validateCustomValues(bodyCustom: Record<string, unknown> | null | undef
   return { errors, parsed, flat };
 }
 
-function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
+function saveCustomValues(objectType: CustomObjectType, ownerId: number, parsed: Map<number, string | null>) {
+  const store = CUSTOM_VALUE_STORES[objectType];
   for (const [fieldId, value] of parsed) {
-    const existing = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === fieldId);
+    const existing = store.rows().find((v) => v[store.fk] === ownerId && v.field_id === fieldId);
     if (existing) existing.value = value;
-    else db.project_custom_values.push({ id: nextId(), project_id: projectId, field_id: fieldId, value });
+    else store.rows().push({ id: nextId(), [store.fk]: ownerId, field_id: fieldId, value });
   }
 }
 
-function serializeCustomValues(projectId: number): Record<string, Row> {
+function serializeCustomValues(objectType: CustomObjectType, ownerId: number): Record<string, Row> {
+  const store = CUSTOM_VALUE_STORES[objectType];
   const out: Record<string, Row> = {};
-  for (const f of activeCustomFields()) {
-    const value = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === f.id)?.value ?? null;
+  for (const f of activeCustomFields(objectType)) {
+    const value = store.rows().find((v) => v[store.fk] === ownerId && v.field_id === f.id)?.value ?? null;
     const opt = f.field_type === "dropdown" && value ? valueById(Number(value)) : undefined;
     out[f.field_key] = { id: f.id, type: f.field_type, value, option_label: opt?.label ?? null, option_color: opt?.color ?? null };
   }
@@ -248,6 +268,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
 
   return {
     id: p.id, project_code: p.project_code, mcp_number: p.mcp_number, mcp_name: p.mcp_name,
+    project_name: p.project_name ?? null,
     assignee_id: p.assignee_id, assignee_name: userName(p.assignee_id) ?? "—",
     annualized_premium: p.annualized_premium ?? null,
     assignment_date: p.assignment_date, target_date: p.target_date, template_id: p.template_id,
@@ -264,12 +285,15 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
     days_in_status: Math.max(0, daysBetween(statusChanged, today())),
     open_task_count: open.length, task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
-    custom: serializeCustomValues(p.id),
+    custom: serializeCustomValues("project", p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
 
-function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null; [k: string]: any }): string[] {
+function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null; [k: string]: any }, opts: { cancelled?: boolean } = {}): string[] {
+  // E5: cancellation requires a Close Reason; Final Summary is optional and
+  // incomplete required tasks don't block (abandoned work is the point).
+  if (opts.cancelled) return body.close_reason_id ? [] : ["Close Reason is required to cancel a project"];
   const problems: string[] = [];
   const done = doneStatusIds();
   for (const t of db.project_tasks)
@@ -314,6 +338,14 @@ const route = (method: string, pattern: string, h: Handler) => {
   const re = new RegExp("^" + pattern.replace(/:([a-z_]+)/g, "(?<$1>[^/]+)") + "$");
   routes.push([method, re, h]);
 };
+
+/** E11: with ?page= the response becomes { rows, total, page, page_size } (default size 25). */
+function paginate(out: any[], q: URLSearchParams): Res | null {
+  if (q.get("page") === null) return null;
+  const size = Math.min(200, Math.max(1, Number(q.get("page_size")) || 25));
+  const page = Math.max(1, Number(q.get("page")) || 1);
+  return ok({ rows: out.slice((page - 1) * size, page * size), total: out.length, page, page_size: size });
+}
 
 export function demoRequest(method: string, url: string, body?: any): Res {
   const u = new URL(url, "http://demo");
@@ -371,7 +403,7 @@ route("POST", "/api/picklists/:id/values", (m, _q, b) => {
   if (!list) return err(404, "Picklist not found");
   if (!b.label?.trim()) return err(400, "Label is required");
   const max = Math.max(0, ...db.picklist_values.filter((v) => v.picklist_id === list.id).map((v) => v.sort_order));
-  const v = { id: nextId(), picklist_id: list.id, label: b.label.trim(), sort_order: max + 1, color: b.color || "#64748B", is_active: 1, is_default: 0, maps_to: null };
+  const v = { id: nextId(), picklist_id: list.id, label: b.label.trim(), sort_order: max + 1, color: b.color || "#64748B", is_active: 1, is_default: 0, archived: 0, maps_to: null };
   db.picklist_values.push(v);
   return ok(v, 201);
 });
@@ -387,28 +419,40 @@ route("PATCH", "/api/picklist-values/:id", (m, _q, b) => {
       return err(400, "System values can't be deactivated — board logic depends on them");
     v.is_active = b.is_active ? 1 : 0;
   }
+  if (b.archived !== undefined) {
+    // B1: explicit archive/restore, same system-value guard as deactivation
+    const list = db.picklists.find((l) => l.id === v.picklist_id)!;
+    if (list.is_system && v.maps_to)
+      return err(400, "System values can't be archived or restored — board logic depends on them");
+    v.archived = b.archived ? 1 : 0;
+  }
   if (b.is_default) {
     for (const x of db.picklist_values) if (x.picklist_id === v.picklist_id) x.is_default = 0;
     v.is_default = 1;
   }
   return ok(v);
 });
+/** B1: used values are archived (never deleted); never-used values may be hard-deleted. */
 route("DELETE", "/api/picklist-values/:id", (m) => {
   const v = db.picklist_values.find((x) => x.id === Number(m.id));
   if (!v) return err(404, "Value not found");
   const list = db.picklists.find((l) => l.id === v.picklist_id)!;
   if (list.is_system && v.maps_to)
-    return err(400, "System values can't be deleted — deactivation isn't allowed either since board logic depends on them");
+    return err(400, "System values can't be deleted or archived — board logic depends on them");
+  const dropdownFieldIds = new Set(db.custom_fields.filter((f) => f.field_type === "dropdown").map((f) => f.id));
   const refs =
     db.projects.filter((p) => [p.status_id, p.risk_level_id, p.close_reason_id].includes(v.id)).length +
     db.project_tasks.filter((t) => [t.status_id, t.priority_id].includes(v.id)).length +
     db.time_logs.filter((l) => l.activity_type_id === v.id).length +
     db.activities.filter((a) => a.category_id === v.id || a.activity_type_id === v.id).length +
     db.wins.filter((w) => w.category_id === v.id).length +
-    db.template_tasks.filter((t) => t.default_priority_id === v.id).length;
+    db.template_tasks.filter((t) => t.default_priority_id === v.id).length +
+    // B1: dropdown selections stored in custom-value tables count as references too
+    db.project_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length +
+    db.task_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length; // E9
   if (refs > 0) {
-    v.is_active = 0;
-    return ok({ deactivated: true, message: `"${v.label}" is referenced by ${refs} record(s) — deactivated instead of deleted. Existing records keep it; it disappears from new dropdowns.` });
+    v.archived = 1;
+    return ok({ archived: true, message: `"${v.label}" is referenced by ${refs} record(s), so it was archived instead of deleted. Existing records keep displaying it; it no longer appears in dropdowns for new entries.` });
   }
   db.picklist_values = db.picklist_values.filter((x) => x.id !== v.id);
   return ok({ deleted: true });
@@ -416,7 +460,11 @@ route("DELETE", "/api/picklist-values/:id", (m) => {
 
 // ---- dynamic custom project fields ----
 const CUSTOM_FIELD_TYPES = ["text", "number", "currency", "date", "dropdown", "checkbox"];
-const CUSTOM_FIELD_VIEWS = ["project_list", "project_header", "portfolio_card"];
+// E9: layout slots per object type
+const CUSTOM_FIELD_VIEWS: Record<string, string[]> = {
+  project: ["project_list", "project_header", "portfolio_card"],
+  task: ["task_list", "task_card"],
+};
 const OPTION_COLORS = ["#2E4E8F", "#12808A", "#8A6FB8", "#C99239", "#4E9468", "#B0632F", "#5C6B84", "#C2554E"];
 
 const customFieldOut = (f: Row) => ({
@@ -431,6 +479,8 @@ route("GET", "/api/custom-fields", () =>
 );
 route("POST", "/api/custom-fields", (_m, _q, b) => {
   const label = String(b.label ?? "").trim();
+  const objectType: CustomObjectType = b.object_type === "task" ? "task" : "project";
+  if (b.object_type && !(b.object_type in CUSTOM_FIELD_VIEWS)) return err(400, "object_type must be one of: project, task");
   if (!label) return err(400, "Field label is required");
   if (!CUSTOM_FIELD_TYPES.includes(b.field_type)) return err(400, `Field type must be one of: ${CUSTOM_FIELD_TYPES.join(", ")}`);
   const opts = (Array.isArray(b.options) ? b.options : []).map((o: unknown) => String(o).trim()).filter(Boolean);
@@ -445,22 +495,22 @@ route("POST", "/api/custom-fields", (_m, _q, b) => {
     let plName = label;
     if (db.picklists.some((l) => l.name === plName)) plName = `${plName} (Custom Field)`;
     picklistId = nextId();
-    db.picklists.push({ id: picklistId, name: plName, object_type: "project", is_system: 0 });
+    db.picklists.push({ id: picklistId, name: plName, object_type: objectType, is_system: 0 });
     opts.forEach((o: string, i: number) =>
       db.picklist_values.push({
         id: nextId(), picklist_id: picklistId, label: o, sort_order: i + 1,
-        color: OPTION_COLORS[i % OPTION_COLORS.length], is_active: 1, is_default: i === 0 ? 1 : 0, maps_to: null,
+        color: OPTION_COLORS[i % OPTION_COLORS.length], is_active: 1, is_default: i === 0 ? 1 : 0, archived: 0, maps_to: null,
       })
     );
   }
   const maxSort = Math.max(0, ...db.custom_fields.map((f) => f.sort_order));
   const f: Row = {
-    id: nextId(), object_type: "project", label, field_key: key, field_type: b.field_type,
+    id: nextId(), object_type: objectType, label, field_key: key, field_type: b.field_type,
     picklist_id: picklistId, is_active: 1, sort_order: maxSort + 1, created_date: now(),
   };
   db.custom_fields.push(f);
-  db.field_requirements.push({ id: nextId(), object_type: "project", field_name: key, label, is_system: 0, required: 0, required_at: "creation" });
-  for (const view of CUSTOM_FIELD_VIEWS) {
+  db.field_requirements.push({ id: nextId(), object_type: objectType, field_name: key, label, is_system: 0, required: 0, required_at: "creation" });
+  for (const view of CUSTOM_FIELD_VIEWS[objectType]) {
     const max = Math.max(0, ...db.view_layout_fields.filter((x) => x.view_name === view).map((x) => x.display_order));
     db.view_layout_fields.push({ id: nextId(), view_name: view, field_key: key, label, display_order: max + 1, is_visible: 1, is_locked: 0 });
   }
@@ -473,7 +523,7 @@ route("PATCH", "/api/custom-fields/:id", (m, _q, b) => {
     const label = String(b.label).trim();
     if (!label) return err(400, "Field label is required");
     f.label = label;
-    for (const r of db.field_requirements) if (r.object_type === "project" && r.field_name === f.field_key) r.label = label;
+    for (const r of db.field_requirements) if (r.object_type === f.object_type && r.field_name === f.field_key) r.label = label;
     for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.label = label;
   }
   if (b.sort_order !== undefined) f.sort_order = b.sort_order;
@@ -486,15 +536,18 @@ route("PATCH", "/api/custom-fields/:id", (m, _q, b) => {
 route("DELETE", "/api/custom-fields/:id", (m) => {
   const f = db.custom_fields.find((x) => x.id === Number(m.id));
   if (!f) return err(404, "Custom field not found");
-  const refs = db.project_custom_values.filter((v) => v.field_id === f.id && v.value != null).length;
+  const isTask = f.object_type === "task";
+  const values = isTask ? db.task_custom_values : db.project_custom_values;
+  const refs = values.filter((v) => v.field_id === f.id && v.value != null).length;
   if (refs > 0) {
     f.is_active = 0;
     for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.is_visible = 0;
-    return ok({ deactivated: true, message: `"${f.label}" holds values on ${refs} project(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
+    return ok({ deactivated: true, message: `"${f.label}" holds values on ${refs} ${f.object_type}(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
   }
-  db.project_custom_values = db.project_custom_values.filter((v) => v.field_id !== f.id);
+  if (isTask) db.task_custom_values = db.task_custom_values.filter((v) => v.field_id !== f.id);
+  else db.project_custom_values = db.project_custom_values.filter((v) => v.field_id !== f.id);
   db.view_layout_fields = db.view_layout_fields.filter((v) => v.field_key !== f.field_key);
-  db.field_requirements = db.field_requirements.filter((r) => !(r.object_type === "project" && r.field_name === f.field_key));
+  db.field_requirements = db.field_requirements.filter((r) => !(r.object_type === f.object_type && r.field_name === f.field_key));
   db.custom_fields = db.custom_fields.filter((x) => x.id !== f.id);
   if (f.picklist_id) {
     db.picklist_values = db.picklist_values.filter((v) => v.picklist_id !== f.picklist_id);
@@ -538,7 +591,7 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
     id: nextId(), template_id: tpl.id, step_order: max + 1, name: b.name.trim(), description: b.description ?? "",
     required: b.required ? 1 : 0, due_offset: b.due_offset ?? 7,
     default_priority_id: b.default_priority_id ?? null,
-    can_edit: b.can_edit === false || b.can_edit === 0 ? 0 : 1, can_skip: b.can_skip ? 1 : 0,
+    can_edit: b.can_edit === false || b.can_edit === 0 ? 0 : 1,
   };
   db.template_tasks.push(t);
   return ok(t, 201);
@@ -546,7 +599,7 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
 route("PATCH", "/api/template-tasks/:id", (m, _q, b) => {
   const t = db.template_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Template task not found");
-  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "can_skip", "step_order"])
+  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "step_order"])
     if (f in b) t[f] = b[f];
   return ok(t);
 });
@@ -628,8 +681,19 @@ route("GET", "/api/projects", (_m, q) => {
   if (q.get("risk_level_id")) out = out.filter((p) => p.risk_level_id === Number(q.get("risk_level_id")));
   if (q.get("template_id")) out = out.filter((p) => p.template_id === Number(q.get("template_id")));
   const s = q.get("q")?.toLowerCase();
-  if (s) out = out.filter((p) => [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name].some((f) => f?.toLowerCase().includes(s)));
-  return ok(out);
+  if (s)
+    out = out.filter((p) =>
+      [p.mcp_name, p.mcp_number, p.project_code, p.project_name, p.assignee_name, p.status_label, p.close_reason_label]
+        .some((f: any) => f?.toLowerCase().includes(s))
+    );
+  // E11: server-side sort so it covers the full result set
+  const sort = q.get("sort");
+  if (sort) {
+    const d = q.get("dir") === "desc" ? -1 : 1;
+    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    out = out.slice().sort((a, b) => { const av = keyOf(a), bv = keyOf(b); return (av < bv ? -1 : av > bv ? 1 : 0) * d; });
+  }
+  return paginate(out, q) ?? ok(out);
 });
 route("GET", "/api/projects/:id", (m) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
@@ -642,7 +706,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const ap = Number(b.annualized_premium);
   if (b.annualized_premium == null || b.annualized_premium === "" || !Number.isFinite(ap) || ap < 0)
     return err(400, "Annualized Premium (AP) is required and must be a dollar amount");
-  const custom = validateCustomValues(b.custom);
+  const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return err(400, custom.errors.join("; "));
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
   if (reqErrs.length) return err(400, reqErrs.join("; "));
@@ -652,9 +716,10 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const tpl = db.workflow_templates.find((t) => t.id === Number(b.template_id) && t.is_active);
   if (!tpl) return err(400, "Selected template is not available");
 
-  const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
+  const code = nextProjectCode();
   const p: Row = {
     id: nextId(), project_code: code, mcp_number: b.mcp_number, mcp_name: b.mcp_name,
+    project_name: (typeof b.project_name === "string" && b.project_name.trim()) || null,
     assignee_id: b.assignee_id, annualized_premium: ap, assignment_date: b.assignment_date, target_date: b.target_date ?? null,
     template_id: b.template_id, status_id: valueByMapsTo("Project Status", "new")!.id,
     risk_level_id: b.risk_level_id ?? null, rag_override: null, rag_override_reason: null,
@@ -662,7 +727,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
     closed_date: null, closed_by: null, close_reason_id: null, final_summary: null,
   };
   db.projects.push(p);
-  saveCustomValues(p.id, custom.parsed);
+  saveCustomValues("project", p.id, custom.parsed);
   generateTasksFromTemplate(p.id, b.template_id, b.assignment_date, Number(b.assignee_id));
   logActivity({ project_id: p.id, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
   return ok(serializeProject(p, { withTasks: true }), 201);
@@ -676,13 +741,13 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
     if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
     b.annualized_premium = n;
   }
-  const custom = "custom" in b ? validateCustomValues(b.custom) : null;
+  const custom = "custom" in b ? validateCustomValues("project", b.custom) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
 
   const oldAssignee = p.assignee_id;
   const oldAp = p.annualized_premium ?? null;
-  for (const f of ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
-  if (custom) saveCustomValues(p.id, custom.parsed);
+  for (const f of ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
+  if (custom) saveCustomValues("project", p.id, custom.parsed);
 
   if ("annualized_premium" in b && b.annualized_premium !== oldAp) {
     logActivity({
@@ -715,6 +780,7 @@ route("POST", "/api/projects/:id/status", (m, _q, b) => {
   if (!p) return err(404, "Project not found");
   const target = valueById(b.status_id);
   if (!target) return err(400, "Unknown status");
+  if (target.archived) return err(400, `"${target.label}" is archived and can no longer be assigned`);
   if (isClosedStatus(p.status_id))
     return err(400, "Closed projects are never reopened (§2.2). Create a new project for this MCP instead.");
   if (target.maps_to === "closed") {
@@ -722,6 +788,9 @@ route("POST", "/api/projects/:id/status", (m, _q, b) => {
     if (problems.length) return err(422, "Closure requirements not met", { problems, needs_close_form: true });
     return err(422, "Use the Close Project form", { needs_close_form: true, problems: [] });
   }
+  // E5: Cancelled is a closure status — same workflow as closing
+  if (target.maps_to === "cancelled")
+    return err(422, "Use the Cancel Project form", { needs_close_form: true, cancelled: true, problems: [] });
   const old = valueById(p.status_id);
   p.status_id = b.status_id;
   p.status_changed_date = now();
@@ -736,12 +805,21 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "Project is already closed");
-  const problems = closureProblems(p.id, b);
+  const problems = closureProblems(p.id, b, { cancelled: !!b.cancelled });
   if (problems.length && !b.override) return err(422, "Closure requirements not met", { problems });
   if (problems.length && b.override && !b.override_reason?.trim())
     return err(422, "An override reason is required", { problems });
-  const closed = valueByMapsTo("Project Status", "closed")!;
+  const closed = valueByMapsTo("Project Status", b.cancelled ? "cancelled" : "closed")!;
   const old = valueById(p.status_id);
+  // B2: clear any manual RAG override at closure so history reports Closed = Green
+  if (p.rag_override) {
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `cleared manual RAG override (${String(p.rag_override).toUpperCase()}: ${p.rag_override_reason ?? "no reason recorded"}) as part of closure — closed projects report Green`,
+    });
+  }
+  p.rag_override = null;
+  p.rag_override_reason = null;
   p.status_id = closed.id;
   p.status_changed_date = now();
   p.closed_date = now();
@@ -750,7 +828,7 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
   p.final_summary = b.final_summary ?? null;
   logActivity({
     project_id: p.id, user_id: b.user_id, kind: "status_change",
-    note: b.override ? `closed project with override: ${b.override_reason}` : "closed project",
+    note: b.override ? `${b.cancelled ? "cancelled" : "closed"} project with override: ${b.override_reason}` : `${b.cancelled ? "cancelled" : "closed"} project`,
     old_status: old?.label, new_status: closed.label,
   });
   return ok(serializeProject(p));
@@ -758,6 +836,8 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
 route("POST", "/api/projects/:id/rag-override", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
+  // Closed projects report "Closed = Green" (B2) — overrides can't be re-applied
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   if (b.rag && !["red", "amber", "green"].includes(b.rag)) return err(400, "Invalid RAG value");
   if (b.rag && !b.reason?.trim()) return err(400, "An override reason is required for auditability");
   p.rag_override = b.rag ?? null;
@@ -773,7 +853,9 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   if (!b.name?.trim()) return err(400, "Task name is required");
-  const reqErrs = requirementErrors("task", ["creation", "always"], b);
+  const custom = validateCustomValues("task", b.custom); // E9
+  if (custom.errors.length) return err(400, custom.errors.join("; "));
+  const reqErrs = requirementErrors("task", ["creation", "always"], { ...b, ...custom.flat });
   if (reqErrs.length) return err(400, reqErrs.join("; "));
   const max = Math.max(0, ...db.project_tasks.filter((t) => t.project_id === p.id).map((t) => t.step_order));
   const t: Row = {
@@ -784,6 +866,7 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
     notes: "", skip_reason: null, completed_date: null, completed_by: null,
   };
   db.project_tasks.push(t);
+  saveCustomValues("task", t.id, custom.parsed);
   logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "system", note: `added ad-hoc task "${t.name}"` });
   if (b.initial_note?.trim())
     logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "note", note: b.initial_note.trim() });
@@ -817,10 +900,11 @@ route("GET", "/api/tasks", (_m, q) => {
     ((a.due_date ? "0" + a.due_date : "1") + String(a.step_order).padStart(4, "0"))
       .localeCompare((b.due_date ? "0" + b.due_date : "1") + String(b.step_order).padStart(4, "0"))
   );
-  return ok(out.map((x) => {
+  const rows = out.map((x) => {
     const p = db.projects.find((pp) => pp.id === x.project_id)!;
-    return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name };
-  }));
+    return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name, project_name: p.project_name ?? null };
+  });
+  return paginate(rows, q) ?? ok(rows);
 });
 /** All activities linked to a task through the join table (v2 §6). */
 route("GET", "/api/tasks/:id/activities", (m) => {
@@ -839,19 +923,34 @@ route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const tplTask = t.template_task_id ? db.template_tasks.find((x) => x.id === t.template_task_id) : null;
+  const custom = "custom" in b ? validateCustomValues("task", b.custom) : null; // E9
+  if (custom?.errors.length) return err(400, custom.errors.join("; "));
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
   for (const f of editable) if (f in b) t[f] = b[f];
+  if (custom) saveCustomValues("task", t.id, custom.parsed);
   return ok(serializeTask(t));
 });
-route("DELETE", "/api/tasks/:id", (m) => {
+/** E4: Delete replaces Skipped — unlink and preserve time logs & activities, never cascade. */
+route("DELETE", "/api/tasks/:id", (m, q, b) => {
   const t = db.project_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Task not found");
-  if (t.task_type !== "adhoc") return err(400, "Standard template tasks cannot be removed (§2.4)");
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
-  db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
+  const userId = Number(q.get("user_id") ?? b?.user_id) || null;
+  let logCount = 0, actCount = 0;
+  for (const l of db.time_logs) if (l.project_task_id === t.id) { l.project_task_id = null; logCount++; }
+  for (const a of db.activities) if (a.project_task_id === t.id) { a.project_task_id = null; actCount++; }
   db.task_activity_links = db.task_activity_links.filter((l) => l.project_task_id !== t.id);
+  db.task_custom_values = db.task_custom_values.filter((v) => v.task_id !== t.id); // E9
+  db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
+  const kept: string[] = [];
+  if (logCount) kept.push(`${logCount} time log(s) re-parented to the project`);
+  if (actCount) kept.push(`${actCount} note/activity record(s) kept at project level`);
+  logActivity({
+    project_id: p.id, user_id: userId, kind: "system",
+    note: `deleted task "${t.name}"${kept.length ? ` — ${kept.join(", ")}` : ""}`,
+  });
   return ok({ ok: true });
 });
 route("POST", "/api/tasks/:id/status", (m, _q, b) => {
@@ -861,6 +960,9 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const target = valueById(b.status_id);
   if (!target) return err(400, "Unknown status");
+  // E4: archived statuses (Skipped) can't be newly assigned
+  if (target.archived && target.id !== t.status_id)
+    return err(400, `"${target.label}" is archived and can no longer be assigned. Delete the task instead.`);
   const old = valueById(t.status_id);
 
   if (target.maps_to === "skipped" && t.required && !b.skip_reason?.trim())
@@ -895,6 +997,8 @@ route("GET", "/api/timelogs", (_m, q) => {
   let out = db.time_logs.slice();
   if (q.get("user_id")) out = out.filter((l) => l.user_id === Number(q.get("user_id")));
   if (q.get("project_id")) out = out.filter((l) => l.project_id === Number(q.get("project_id")));
+  // E1: the task modal lists the same records the Time Log area shows
+  if (q.get("task_id")) out = out.filter((l) => l.project_task_id === Number(q.get("task_id")));
   if (q.get("start")) out = out.filter((l) => l.date >= q.get("start")!);
   if (q.get("end")) out = out.filter((l) => l.date <= q.get("end")!);
   out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
@@ -1054,17 +1158,55 @@ route("POST", "/api/wins", (_m, _q, b) => {
   const w: Row = {
     id: nextId(), project_id: b.project_id, description: b.description.trim(),
     category_id: b.category_id ?? null, occurred_date: occurred, logged_date: now(), logged_by: b.user_id ?? null,
+    activity_id: null,
   };
   db.wins.push(w);
-  logActivity({ project_id: b.project_id, user_id: b.user_id, kind: "system", note: `logged a win: "${w.description}"` });
+  const note = logActivity({ project_id: b.project_id, user_id: b.user_id, kind: "system", note: `logged a win: "${w.description}"` });
+  w.activity_id = note.id;
   return ok(serializeWin(w), 201);
 });
-route("DELETE", "/api/wins/:id", (m) => {
+/** E8: in-place, author-only win editing (same pattern as note/activity edits). Audited. */
+route("PATCH", "/api/wins/:id", (m, _q, b) => {
   const w = db.wins.find((x) => x.id === Number(m.id));
   if (!w) return err(404, "Win not found");
   const p = db.projects.find((x) => x.id === w.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
+  const editorId = Number(b.user_id);
+  if (!editorId || !w.logged_by || editorId !== w.logged_by) return err(403, "Only the author of a win can edit it");
+  const next = {
+    description: "description" in b ? String(b.description ?? "").trim() : w.description,
+    category_id: "category_id" in b ? b.category_id ?? null : w.category_id,
+    occurred_date: "occurred_date" in b ? b.occurred_date : w.occurred_date,
+  };
+  if (!next.description) return err(400, "Description is required");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.occurred_date ?? "")) return err(400, "Occurred date must be YYYY-MM-DD");
+  logActivity({
+    project_id: w.project_id, user_id: editorId, kind: "system",
+    note: next.description !== w.description
+      ? `edited a win: "${w.description}" \u2192 "${next.description}"`
+      : `edited a win: "${next.description}"`,
+  });
+  w.description = next.description;
+  w.category_id = next.category_id;
+  w.occurred_date = next.occurred_date;
+  return ok(serializeWin(w));
+});
+
+/** B4: author-only, audited deletion; the creation system note is cleaned up too. */
+route("DELETE", "/api/wins/:id", (m, q, b) => {
+  const w = db.wins.find((x) => x.id === Number(m.id));
+  if (!w) return err(404, "Win not found");
+  const p = db.projects.find((x) => x.id === w.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
+  const userId = Number(q.get("user_id") ?? b?.user_id);
+  if (!userId || !w.logged_by || userId !== w.logged_by) return err(403, "Only the author of a win can delete it");
+  db.activities = db.activities.filter((a) =>
+    w.activity_id
+      ? !(a.id === w.activity_id && a.kind === "system")
+      : !(a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"`)
+  );
   db.wins = db.wins.filter((x) => x.id !== w.id);
+  logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
   return ok({ ok: true });
 });
 
@@ -1090,7 +1232,12 @@ route("GET", "/api/dashboard", (_m, q) => {
   const taskIsMine = (x: Row) => (x.assigned_to ? x.assigned_to === userId : mineProjectIds.has(x.project_id));
   const active = all.filter((p) => !p.is_closed);
   const ragBreakdown: Record<string, number> = { red: 0, amber: 0, green: 0 };
-  for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+  // E10: total Annualized Premium alongside the count for each RAG state
+  const ragAp: Record<string, number> = { red: 0, amber: 0, green: 0 };
+  for (const p of active) {
+    ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+    ragAp[p.rag] = (ragAp[p.rag] ?? 0) + (p.annualized_premium ?? 0);
+  }
 
   const done = doneStatusIds();
   const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
@@ -1196,6 +1343,7 @@ route("GET", "/api/dashboard", (_m, q) => {
     closed_this_week: closedThisWeek,
     trends,
     rag_breakdown: ragBreakdown,
+    rag_ap: ragAp,
     overdue_tasks: overdue.map(pick),
     blocked_tasks: blocked.map(pick),
     my_open_tasks: myOpen.map(pick),
@@ -1240,6 +1388,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
   const col = (names: string[]) => header.findIndex((h) => names.includes(h));
   const iMcp = col(["mcp_number", "mcp_", "mcp"]);
   const iName = col(["mcp_name", "customer", "customer_name"]);
+  const iProjectName = col(["project_name"]); // E3: optional
   const iAssignee = col(["assignee", "assignee_name", "assigned_to"]);
   const iAp = col(["ap", "annualized_premium", "annualized_premium_ap", "annual_premium"]);
   const iDate = col(["assignment_date", "assigned", "date"]);
@@ -1250,7 +1399,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
   const defaultTpl = templates.find((t) => t.is_default) ?? templates[0];
   const active = activeStatusIds();
   const seen = new Set<string>();
-  const customCols: [Row, number][] = activeCustomFields()
+  const customCols: [Row, number][] = activeCustomFields("project")
     .map((f): [Row, number] => [f, col([normalizeHeader(f.label), f.field_key])])
     .filter(([, i]) => i >= 0);
 
@@ -1259,6 +1408,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       line: idx + 2,
       mcp_number: (r[iMcp] ?? "").trim(),
       mcp_name: (r[iName] ?? "").trim(),
+      project_name: iProjectName >= 0 ? (r[iProjectName] ?? "").trim() : "",
       assignee: iAssignee >= 0 ? (r[iAssignee] ?? "").trim() : "",
       annualized_premium: null as number | null,
       assignment_date: iDate >= 0 ? (r[iDate] ?? "").trim() : "",
@@ -1316,12 +1466,13 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
   const valid = rows.filter((r) => !r.errors.length && r.assignee_id && r.template_id);
   const statusNew = valueByMapsTo("Project Status", "new")!;
   const created: string[] = [];
-  const fieldIdByKey = new Map(activeCustomFields().map((f) => [f.field_key, f.id]));
+  const fieldIdByKey = new Map(activeCustomFields("project").map((f) => [f.field_key, f.id]));
   for (const r of valid) {
-    const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
+    const code = nextProjectCode();
     const pid = nextId();
     db.projects.push({
       id: pid, project_code: code, mcp_number: r.mcp_number, mcp_name: r.mcp_name,
+      project_name: r.project_name || null,
       assignee_id: r.assignee_id, annualized_premium: r.annualized_premium, assignment_date: r.assignment_date, target_date: null,
       template_id: r.template_id, status_id: statusNew.id, risk_level_id: null,
       rag_override: null, rag_override_reason: null,
@@ -1333,7 +1484,7 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
       const fid = fieldIdByKey.get(key);
       if (fid) parsed.set(fid, value);
     }
-    saveCustomValues(pid, parsed);
+    saveCustomValues("project", pid, parsed);
     generateTasksFromTemplate(pid, r.template_id, r.assignment_date, r.assignee_id ?? null);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created via CSV import` });
     created.push(code);
@@ -1344,7 +1495,9 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
 // ---------------- CSV export (returns content for a blob download) ----------------
 
 function csvEscape(v: unknown): string {
-  const s = v == null ? "" : String(v);
+  let s = v == null ? "" : String(v);
+  // B5: neutralize spreadsheet formula injection (=, +, -, @ prefixes) — see server importexport.ts
+  if (typeof v !== "number" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 const toCsv = (headers: string[], rows: unknown[][]) =>
@@ -1357,13 +1510,13 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     let projects = db.projects.slice().sort((a, b) => (a.created_date < b.created_date ? -1 : 1)).map((p) => serializeProject(p));
     if (q.get("scope") === "active") projects = projects.filter((p) => !p.is_closed);
     if (q.get("scope") === "closed") projects = projects.filter((p) => p.is_closed);
-    const customFields = activeCustomFields();
+    const customFields = activeCustomFields("project");
     return {
       filename: "projects.csv",
       csv: toCsv(
-        ["Project ID", "MCP #", "MCP Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
+        ["Project ID", "MCP #", "MCP Name", "Project Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
         projects.map((p) => [
-          p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
+          p.project_code, p.mcp_number, p.mcp_name, p.project_name ?? "", p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
           p.status_label, p.rag.toUpperCase(), p.risk_label ?? "", p.open_task_count, p.created_date, p.closed_date ?? "", p.close_reason_label ?? "",
           ...customFields.map((f) => customCsvValue(p.custom?.[f.field_key])),
         ])

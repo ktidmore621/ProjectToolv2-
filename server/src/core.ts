@@ -41,6 +41,25 @@ export function valueById(id: number | null | undefined): PickValue | undefined 
   return db.prepare("SELECT * FROM picklist_values WHERE id = ?").get(id) as PickValue | undefined;
 }
 
+/**
+ * E6: all date-based calculations and status determinations run on Central
+ * Time via the IANA zone America/Chicago — NOT a hardcoded UTC-6 offset.
+ * Central observes DST (CDT, UTC-5) from March to November; a fixed offset
+ * would be an hour off for two-thirds of the year and silently flip
+ * due/overdue determinations around midnight. Intl handles the transitions.
+ */
+const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** Today's calendar date in Central Time, as YYYY-MM-DD. */
+export function todayCentral(): string {
+  return CENTRAL_DATE.format(new Date());
+}
+
 /** System keys for statuses that count as "not active". */
 export const CLOSED_KEYS = ["closed", "cancelled"];
 export const DONE_TASK_KEYS = ["complete", "skipped", "cancelled"];
@@ -59,8 +78,8 @@ export function logActivity(opts: {
   note?: string;
   old_status?: string | null;
   new_status?: string | null;
-}) {
-  db.prepare(
+}): number {
+  return db.prepare(
     `INSERT INTO activities (project_id, project_task_id, user_id, kind, category_id, note, old_status, new_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
@@ -72,12 +91,16 @@ export function logActivity(opts: {
     opts.note ?? "",
     opts.old_status ?? null,
     opts.new_status ?? null
-  );
+  ).lastInsertRowid as number;
 }
 
 export function nextProjectCode(): string {
-  const row = db.prepare("SELECT COUNT(*) AS n FROM projects").get() as { n: number };
-  return `CAP-${String(row.n + 1).padStart(4, "0")}`;
+  // Atomic increment of a dedicated sequence (B3). COUNT(*)+1 collided as soon
+  // as a project was deleted or two creates raced the unique constraint.
+  const row = db
+    .prepare("UPDATE counters SET value = value + 1 WHERE key = 'project_code' RETURNING value")
+    .get() as { value: number };
+  return `CAP-${String(row.value).padStart(4, "0")}`;
 }
 
 /** '$0,000.00' — the one AP/currency format used across tables, cards, headers and CSVs. */
@@ -92,7 +115,7 @@ export function parseCurrency(raw: unknown): number | null {
   return Number(String(raw).replace(/[$,\s]/g, ""));
 }
 
-// ---------- Dynamic (custom) project fields ----------
+// ---------- Dynamic (custom) fields — one engine for projects and tasks (E9) ----------
 
 export interface CustomField {
   id: number;
@@ -105,10 +128,22 @@ export interface CustomField {
   sort_order: number;
 }
 
-export function activeCustomFields(): CustomField[] {
+/**
+ * Where each object type stores its custom values. Adding a new object type
+ * here (plus its table in db.ts) is all the engine needs — validation,
+ * persistence, serialization and the B1 picklist-deletion check all read
+ * from this map.
+ */
+export const CUSTOM_VALUE_STORES = {
+  project: { table: "project_custom_values", fk: "project_id" },
+  task: { table: "task_custom_values", fk: "task_id" },
+} as const;
+export type CustomObjectType = keyof typeof CUSTOM_VALUE_STORES;
+
+export function activeCustomFields(objectType: CustomObjectType = "project"): CustomField[] {
   return db
-    .prepare("SELECT * FROM custom_fields WHERE object_type = 'project' AND is_active = 1 ORDER BY sort_order, id")
-    .all() as CustomField[];
+    .prepare("SELECT * FROM custom_fields WHERE object_type = ? AND is_active = 1 ORDER BY sort_order, id")
+    .all(objectType) as CustomField[];
 }
 
 /** Validate one raw value against its field definition → canonical stored text or an error. */
@@ -155,7 +190,10 @@ export function parseCustomValue(field: CustomField, raw: unknown): { ok: true; 
  * `flat` mirrors the parsed values keyed by field_key so field_requirements
  * checks can treat custom fields exactly like built-in ones.
  */
-export function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined): {
+export function validateCustomValues(
+  objectType: CustomObjectType,
+  bodyCustom: Record<string, unknown> | null | undefined
+): {
   errors: string[];
   parsed: Map<number, string | null>;
   flat: Record<string, string | null>;
@@ -163,7 +201,7 @@ export function validateCustomValues(bodyCustom: Record<string, unknown> | null 
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
-  for (const f of activeCustomFields()) {
+  for (const f of activeCustomFields(objectType)) {
     const raw = bodyCustom?.[f.field_key];
     const r = parseCustomValue(f, raw);
     if (r.ok) {
@@ -174,15 +212,13 @@ export function validateCustomValues(bodyCustom: Record<string, unknown> | null 
   return { errors, parsed, flat };
 }
 
-const upsertCustomValue = () =>
-  db.prepare(
-    `INSERT INTO project_custom_values (project_id, field_id, value) VALUES (?, ?, ?)
-     ON CONFLICT(project_id, field_id) DO UPDATE SET value = excluded.value`
+export function saveCustomValues(objectType: CustomObjectType, ownerId: number, parsed: Map<number, string | null>) {
+  const { table, fk } = CUSTOM_VALUE_STORES[objectType];
+  const ins = db.prepare(
+    `INSERT INTO ${table} (${fk}, field_id, value) VALUES (?, ?, ?)
+     ON CONFLICT(${fk}, field_id) DO UPDATE SET value = excluded.value`
   );
-
-export function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
-  const ins = upsertCustomValue();
-  for (const [fieldId, value] of parsed) ins.run(projectId, fieldId, value);
+  for (const [fieldId, value] of parsed) ins.run(ownerId, fieldId, value);
 }
 
 export interface CustomValueOut {
@@ -192,13 +228,14 @@ export interface CustomValueOut {
   option_color: string | null;
 }
 
-/** { field_key: {type, value, option_label, option_color} } for one project — what every view renders from. */
-export function serializeCustomValues(projectId: number): Record<string, CustomValueOut> {
-  const fields = activeCustomFields();
+/** { field_key: {type, value, option_label, option_color} } for one record — what every view renders from. */
+export function serializeCustomValues(objectType: CustomObjectType, ownerId: number): Record<string, CustomValueOut> {
+  const fields = activeCustomFields(objectType);
   if (!fields.length) return {};
+  const { table, fk } = CUSTOM_VALUE_STORES[objectType];
   const rows = db
-    .prepare("SELECT field_id, value FROM project_custom_values WHERE project_id = ?")
-    .all(projectId) as { field_id: number; value: string | null }[];
+    .prepare(`SELECT field_id, value FROM ${table} WHERE ${fk} = ?`)
+    .all(ownerId) as { field_id: number; value: string | null }[];
   const byField = new Map(rows.map((r) => [r.field_id, r.value]));
   const out: Record<string, CustomValueOut> = {};
   for (const f of fields) {
@@ -262,8 +299,25 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
   }
 }
 
-/** Closure requirements per §4.8. Returns list of unmet requirements. */
-export function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null }): string[] {
+/**
+ * Closure requirements per §4.8. Returns list of unmet requirements.
+ * E4: required tasks must be Complete (or deleted) going forward — but
+ * legacy Skipped/Cancelled tasks still satisfy closure (DONE_TASK_KEYS keeps
+ * 'skipped'), so projects with historically skipped tasks are not
+ * retroactively invalidated. Skipped can no longer be newly assigned.
+ */
+export function closureProblems(
+  projectId: number,
+  body: { final_summary?: string | null; close_reason_id?: number | null },
+  opts: { cancelled?: boolean } = {}
+): string[] {
+  // E5: cancellation follows the same closure processing but different inputs —
+  // Close Reason is required, Final Summary is optional (a cancelled project
+  // often has no outcome to summarize), and incomplete required tasks don't
+  // block: cancellation is precisely how abandoned work gets recorded.
+  if (opts.cancelled) {
+    return body.close_reason_id ? [] : ["Close Reason is required to cancel a project"];
+  }
   const problems: string[] = [];
   const doneIds = valuesFor("Task Status")
     .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
@@ -304,7 +358,7 @@ export function computeRag(project: any): { rag: "red" | "amber" | "green"; reas
   const redOverdue = getSettingNum("rag_red_overdue_days", 3);
   const amberDue = getSettingNum("rag_amber_due_days", 3);
   const stallDays = getSettingNum("rag_stall_days", 7);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral(); // E6: due/overdue flips at Central midnight, not UTC's
 
   const doneIds = valuesFor("Task Status")
     .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
@@ -369,7 +423,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     .sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
 
   const statusChanged = (p.status_changed_date ?? p.created_date).slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral();
   const daysInStatus = Math.max(
     0,
     Math.floor((new Date(today + "T00:00:00Z").getTime() - new Date(statusChanged + "T00:00:00Z").getTime()) / 86400000)
@@ -380,6 +434,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     project_code: p.project_code,
     mcp_number: p.mcp_number,
     mcp_name: p.mcp_name,
+    project_name: p.project_name ?? null,
     assignee_id: p.assignee_id,
     assignee_name: assignee?.name ?? "—",
     annualized_premium: p.annualized_premium,
@@ -409,7 +464,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     open_task_count: openTasks.length,
     task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
-    custom: serializeCustomValues(p.id),
+    custom: serializeCustomValues("project", p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
@@ -440,6 +495,7 @@ export function serializeTask(t: any) {
     activity_count: (taskActivityCount.get(t.id) as { n: number }).n,
     note_count: (taskNoteCount.get(t.id) as { n: number }).n,
     latest_note: (taskLatestNote.get(t.id) as { note: string; activity_date: string; user_name: string | null } | undefined) ?? null,
+    custom: serializeCustomValues("task", t.id), // E9
   };
 }
 

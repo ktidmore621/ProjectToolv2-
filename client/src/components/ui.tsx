@@ -79,10 +79,10 @@ export function Modal({
 }
 
 export function Btn({
-  children, onClick, kind = "secondary", type = "button", disabled, small,
+  children, onClick, kind = "secondary", type = "button", disabled, small, title,
 }: {
   children: ReactNode; onClick?: () => void; kind?: "primary" | "secondary" | "danger" | "ghost";
-  type?: "button" | "submit"; disabled?: boolean; small?: boolean;
+  type?: "button" | "submit"; disabled?: boolean; small?: boolean; title?: string;
 }) {
   const styles = {
     primary: "bg-primary text-white hover:bg-primary/90",
@@ -91,7 +91,7 @@ export function Btn({
     ghost: "text-muted hover:bg-canvas hover:text-ink",
   }[kind];
   return (
-    <button type={type} onClick={onClick} disabled={disabled}
+    <button type={type} onClick={onClick} disabled={disabled} title={title}
       className={`rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${small ? "px-2.5 py-1 text-xs" : "px-3.5 py-1.5 text-sm"} ${styles}`}>
       {children}
     </button>
@@ -130,6 +130,28 @@ export function Card({ children, className, style }: { children: ReactNode; clas
 
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={`font-mono text-[0.92em] ${className ?? ""}`}>{children}</span>;
+}
+
+/** E11: shared pagination footer for server-paginated list views (default page size 25). */
+export function Pager({ page, pageSize, total, onPage }: {
+  page: number; pageSize: number; total: number; onPage: (p: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (total <= pageSize && page === 1) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(total, page * pageSize);
+  return (
+    <div className="mt-3 flex items-center justify-between text-xs text-muted">
+      <span>
+        Showing <Mono>{total === 0 ? 0 : from}–{to}</Mono> of <Mono>{total}</Mono>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Btn small kind="ghost" disabled={page <= 1} onClick={() => onPage(page - 1)}>← Prev</Btn>
+        <span>Page <Mono>{page}</Mono> / <Mono>{pages}</Mono></span>
+        <Btn small kind="ghost" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next →</Btn>
+      </span>
+    </div>
+  );
 }
 
 /** CSV export link — works against the server normally, generates the file in-browser in demo mode. */

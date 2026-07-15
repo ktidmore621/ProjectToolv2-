@@ -50,6 +50,8 @@ export interface PickValue {
   color: string;
   is_active: number;
   is_default: number;
+  /** B1: archived values are hidden from dropdowns for new entries but still render on legacy records. */
+  archived: number;
   maps_to: string | null;
 }
 export interface Picklist {
@@ -108,6 +110,8 @@ export interface Project {
   project_code: string;
   mcp_number: string;
   mcp_name: string;
+  /** E3: optional free-text project name, shown immediately after MCP Name. */
+  project_name: string | null;
   assignee_id: number;
   assignee_name: string;
   annualized_premium: number | null;
@@ -166,9 +170,12 @@ export interface Task {
   activity_count: number;
   note_count: number;
   latest_note: { note: string; activity_date: string; user_name: string | null } | null;
+  /** E9: admin-defined task field values, keyed by field_key. */
+  custom?: Record<string, CustomValue>;
   // present on cross-project task rows
   project_code?: string;
   mcp_name?: string;
+  project_name?: string | null;
 }
 
 export interface Activity {
@@ -206,6 +213,7 @@ export interface Win {
   category_key: string | null;
   occurred_date: string;
   logged_date: string;
+  logged_by: number | null;
   logged_by_name: string | null;
   project_code: string | null;
   mcp_name: string | null;

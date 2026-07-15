@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Activity, api, fmtDate, fmtDayOrdinal, fmtTime, Project, Win } from "../api";
+import { Activity, api, fmtCurrency, fmtDate, fmtDayOrdinal, fmtTime, Project, Win } from "../api";
 import { canEditActivity, EditActivityButton, EditActivityModal } from "../components/EditActivityModal";
 import {
   ActivityTypeIcon, AlertIcon, ArchiveIcon, BlockedIcon, CheckIcon, FolderIcon, TrophyIcon,
@@ -28,6 +28,8 @@ interface DashData {
   closed_this_week: number;
   trends: { active: string; overdue: string; blocked: string; closed: string };
   rag_breakdown: Record<string, number>;
+  /** E10: total Annualized Premium per RAG state. */
+  rag_ap: Record<string, number>;
   overdue_tasks: any[];
   blocked_tasks: any[];
   my_open_tasks: any[];
@@ -103,10 +105,12 @@ export function Dashboard() {
             ) : null
           )}
         </div>
-        <div className="mt-3 flex gap-5 text-sm">
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+          {/* E10: each RAG state shows its project count AND total Annualized Premium */}
           {(["red", "amber", "green"] as const).map((r) => (
             <span key={r} className="flex items-center gap-2">
               <RagChip rag={r} small /> <Mono>{data.rag_breakdown[r] ?? 0}</Mono>
+              <span className="text-xs text-muted">· <Mono>{fmtCurrency(data.rag_ap?.[r] ?? 0)}</Mono> AP</span>
             </span>
           ))}
         </div>

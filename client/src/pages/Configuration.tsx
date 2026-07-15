@@ -17,7 +17,10 @@ const TABS = [
 
 export function Configuration() {
   const { currentUser } = useSession();
-  // Users with Show Configuration off (Working As tab) can't see this page
+  // Users with Show Configuration off (Working As tab) can't see this page.
+  // B6 — SECURITY NOTE: this is UI visibility only, NOT access control. The
+  // /api/* configuration endpoints stay reachable regardless of this flag;
+  // see the "Security model" section of the README.
   if (currentUser && !currentUser.show_configuration) return <Navigate to="/" replace />;
   return (
     <Page title="Configuration">
@@ -87,7 +90,8 @@ function WorkingAs() {
         These users can access the system and appear in every assignment dropdown. <b>Home Default</b> controls
         whether their Home page opens scoped to their own items or to everything; <b>Default Assignee Filter</b> is the
         assignee pre-applied on the Project List, Kanban Board and Task List (they can still change it there);
-        <b> Show Configuration</b> controls whether this Configuration page is visible to them.
+        <b> Show Configuration</b> controls whether this Configuration page is visible to them
+        (visibility only — it is <b>not</b> a security control; see the README's "Security model").
       </p>
       <table className="w-full text-sm">
         <thead>
@@ -151,6 +155,8 @@ function Picklists() {
   const { picklists, refreshPicklists } = useConfig();
   const toast = useToast();
   const [selected, setSelected] = useState<string>("Project Status");
+  // B1: Archived filter — archived values stay findable here
+  const [valueFilter, setValueFilter] = useState<"active" | "archived" | "all">("active");
   const list = picklists.find((p) => p.name === selected);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("#2E4E8F");
@@ -185,12 +191,16 @@ function Picklists() {
   async function remove(v: PickValue) {
     try {
       const r = await api.del(`/api/picklist-values/${v.id}`);
-      toast(r.deactivated ? r.message : `Deleted "${v.label}".`, r.deactivated ? "warning" : "success");
+      toast(r.archived ? r.message : `Deleted "${v.label}".`, r.archived ? "warning" : "success");
       refreshPicklists();
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
   }
 
   if (!picklists.length) return <Skeleton className="h-72" />;
+
+  const visibleValues = (list?.values ?? []).filter((v) =>
+    valueFilter === "all" ? true : valueFilter === "archived" ? !!v.archived : !v.archived
+  );
 
   return (
     <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
@@ -205,16 +215,29 @@ function Picklists() {
       </Card>
       {list && (
         <Card className="p-4">
-          <div className="mb-3 flex items-baseline justify-between">
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold">{list.name}</h2>
-            {!!list.is_system && <span className="text-xs text-muted">System list — values can be relabeled, reordered and recolored, but not removed.</span>}
+            <span className="flex items-center gap-3">
+              {!!list.is_system && <span className="text-xs text-muted">System list — values can be relabeled, reordered and recolored, but not removed.</span>}
+              <select className={inputCls + " !w-auto !py-1 text-xs"} value={valueFilter} aria-label="Filter values"
+                onChange={(e) => setValueFilter(e.target.value as any)}>
+                <option value="active">Active values</option>
+                <option value="archived">Archived values</option>
+                <option value="all">All values</option>
+              </select>
+            </span>
           </div>
+          {visibleValues.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted">
+              {valueFilter === "archived" ? "No archived values in this list." : "No values match this filter."}
+            </p>
+          )}
           <ul className="divide-y divide-hairline">
-            {list.values.map((v, i) => (
-              <li key={v.id} className={`flex flex-wrap items-center gap-2 py-2 ${v.is_active ? "" : "opacity-50"}`}>
+            {visibleValues.map((v, i) => (
+              <li key={v.id} className={`flex flex-wrap items-center gap-2 py-2 ${v.is_active && !v.archived ? "" : "opacity-60"}`}>
                 <span className="flex gap-0.5">
                   <button onClick={() => move(v, -1)} disabled={i === 0} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} up`}>↑</button>
-                  <button onClick={() => move(v, 1)} disabled={i === list.values.length - 1} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} down`}>↓</button>
+                  <button onClick={() => move(v, 1)} disabled={i === visibleValues.length - 1} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} down`}>↓</button>
                 </span>
                 <input type="color" value={v.color} onChange={(e) => update(v, { color: e.target.value })}
                   className="h-7 w-9 cursor-pointer rounded border border-hairline" aria-label={`Color of ${v.label}`} />
@@ -226,14 +249,25 @@ function Picklists() {
                 />
                 <Chip label={v.label} color={v.color} small />
                 {!!v.is_default && <span className="rounded bg-primary-soft px-1.5 py-px text-[10px] font-semibold uppercase text-primary">default</span>}
+                {!!v.archived && <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted" title="Hidden from dropdowns for new entries; legacy records still display it.">archived</span>}
                 <span className="ml-auto flex items-center gap-1.5">
-                  {!v.is_default && !!v.is_active && <Btn small kind="ghost" onClick={() => update(v, { is_default: true })}>Set default</Btn>}
-                  {v.is_active ? (
+                  {!v.is_default && !!v.is_active && !v.archived && <Btn small kind="ghost" onClick={() => update(v, { is_default: true })}>Set default</Btn>}
+                  {!v.archived && (v.is_active ? (
                     <Btn small kind="ghost" onClick={() => update(v, { is_active: false })}>Deactivate</Btn>
                   ) : (
                     <Btn small kind="ghost" onClick={() => update(v, { is_active: true })}>Reactivate</Btn>
-                  )}
-                  <Btn small kind="danger" onClick={() => remove(v)}>Delete</Btn>
+                  ))}
+                  {/* B1: in-use values archive (hidden going forward, intact on legacy records); never-used values may still be hard-deleted */}
+                  {!(list.is_system && v.maps_to) && (v.archived ? (
+                    <Btn small kind="ghost" onClick={() => update(v, { archived: false })}>Restore</Btn>
+                  ) : (
+                    <>
+                      <Btn small kind="ghost" onClick={() => update(v, { archived: true })}
+                        title="Hide from dropdowns going forward; existing records keep displaying it.">Archive</Btn>
+                      <Btn small kind="danger" onClick={() => remove(v)}
+                        title="Deletes only if no record has ever used it — otherwise it is archived.">Delete</Btn>
+                    </>
+                  ))}
                 </span>
               </li>
             ))}
@@ -410,13 +444,12 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
     name: task.name ?? "", description: task.description ?? "",
     required: !!(task.required ?? 1), due_offset: task.due_offset ?? 7,
     default_priority_id: task.default_priority_id ?? "", can_edit: !!(task.can_edit ?? 1),
-    can_skip: !!(task.can_skip ?? 0),
   });
   async function submit(e: FormEvent) {
     e.preventDefault();
     const payload = {
       ...form,
-      required: form.required ? 1 : 0, can_edit: form.can_edit ? 1 : 0, can_skip: form.can_skip ? 1 : 0,
+      required: form.required ? 1 : 0, can_edit: form.can_edit ? 1 : 0,
       default_priority_id: form.default_priority_id ? Number(form.default_priority_id) : null,
       due_offset: Number(form.due_offset),
     };
@@ -443,7 +476,6 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
         <div className="grid grid-cols-2 gap-2 text-sm">
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} /> Required</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_edit} onChange={(e) => setForm({ ...form, can_edit: e.target.checked })} /> User can edit name</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_skip} onChange={(e) => setForm({ ...form, can_skip: e.target.checked })} /> User can skip without reason</label>
         </div>
         <div className="flex justify-end gap-2"><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" type="submit">{isNew ? "Add task" : "Save"}</Btn></div>
       </form>
@@ -563,17 +595,18 @@ const FIELD_TYPES: { key: CustomFieldType; label: string; hint: string }[] = [
 ];
 
 /**
- * Admin-defined project fields. A new field immediately shows up on the
- * create/edit forms, the project detail header, list/Kanban layouts and
- * imports/exports — no code change. Dropdown options are a normal picklist
- * (editable under Picklists & Values); requiredness lives in Field
- * Requirements; per-view visibility in Card & View Layouts.
+ * Admin-defined fields for projects AND tasks (E9 — one engine, two object
+ * types). A new field immediately shows up on the matching create/edit forms,
+ * detail views, list/Kanban layouts and (for projects) imports/exports — no
+ * code change. Dropdown options are a normal picklist (editable under
+ * Picklists & Values); requiredness lives in Field Requirements; per-view
+ * visibility in Card & View Layouts.
  */
 function CustomFields() {
   const toast = useToast();
   const { refreshPicklists } = useConfig();
   const [fields, setFields] = useState<CustomField[] | null>(null);
-  const [form, setForm] = useState({ label: "", field_type: "text" as CustomFieldType, options: "" });
+  const [form, setForm] = useState({ label: "", field_type: "text" as CustomFieldType, options: "", object_type: "project" });
 
   const load = useCallback(() => { api.get<CustomField[]>("/api/custom-fields").then(setFields); }, []);
   useEffect(load, [load]);
@@ -584,10 +617,11 @@ function CustomFields() {
       await api.post("/api/custom-fields", {
         label: form.label,
         field_type: form.field_type,
+        object_type: form.object_type,
         options: form.field_type === "dropdown" ? form.options.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
       });
-      toast(`Added field "${form.label}" — it now appears on project forms, views and imports/exports.`, "success");
-      setForm({ label: "", field_type: "text", options: "" });
+      toast(`Added ${form.object_type} field "${form.label}" — it now appears on the matching forms and views.`, "success");
+      setForm({ label: "", field_type: "text", options: "", object_type: form.object_type });
       load();
       refreshPicklists(); // dropdown fields add a picklist
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
@@ -615,11 +649,12 @@ function CustomFields() {
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
       <Card className="p-4">
-        <h3 className="mb-1 text-sm font-semibold">Project fields</h3>
+        <h3 className="mb-1 text-sm font-semibold">Custom fields</h3>
         <p className="mb-3 text-xs text-muted">
-          New fields appear automatically on the create/edit forms, project details, list and Kanban layouts,
-          reporting exports and CSV import. Dropdown options are managed under <b>Picklists & Values</b>;
-          make a field required under <b>Field Requirements</b>; show/hide it per view under <b>Card & View Layouts</b>.
+          New fields appear automatically on the matching create/edit forms, detail views, list and Kanban
+          layouts — and for project fields, reporting exports and CSV import. Dropdown options are managed
+          under <b>Picklists & Values</b>; make a field required under <b>Field Requirements</b>; show/hide it
+          per view under <b>Card & View Layouts</b>.
         </p>
         {fields.length === 0 && <p className="py-6 text-center text-sm text-muted">No custom fields yet.</p>}
         <ul className="divide-y divide-hairline">
@@ -632,6 +667,7 @@ function CustomFields() {
                 aria-label={`Rename ${f.label}`}
               />
               <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted">{typeLabel(f.field_type)}</span>
+              <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${f.object_type === "task" ? "bg-accent-soft text-accent" : "bg-primary-soft text-primary"}`}>{f.object_type}</span>
               {f.field_type === "dropdown" && (
                 <span className="text-xs text-muted">{f.options.filter((o) => o.is_active).map((o) => o.label).join(" · ")}</span>
               )}
@@ -651,6 +687,13 @@ function CustomFields() {
       <Card className="h-fit p-4">
         <h3 className="mb-3 text-sm font-semibold">Add a field</h3>
         <form onSubmit={add} className="space-y-3">
+          <Field label="Applies to" hint={form.object_type === "task" ? "Shows on task create/edit forms, the task modal, and task list/Kanban layouts." : "Shows on project forms, details, layouts and imports/exports."}>
+            <select className={inputCls} value={form.object_type}
+              onChange={(e) => setForm({ ...form, object_type: e.target.value })}>
+              <option value="project">Projects</option>
+              <option value="task">Tasks</option>
+            </select>
+          </Field>
           <Field label="Field label"><input className={inputCls} required value={form.label}
             onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Region" /></Field>
           <Field label="Type" hint={FIELD_TYPES.find((t) => t.key === form.field_type)?.hint}>
@@ -676,6 +719,7 @@ function CustomFields() {
 
 const SAMPLE_PROJECT: Project = {
   id: 0, project_code: "CAP-0042", mcp_number: "MCP-9876", mcp_name: "Sample Customer Co.",
+  project_name: "2026 Billing Recovery",
   assignee_id: 0, assignee_name: "Morgan Hale", annualized_premium: 12500, assignment_date: "2026-06-15", target_date: "2026-08-01",
   template_id: 0, status_id: 0, status_label: "In Progress", status_color: "#12808A", status_key: "in_progress",
   risk_level_id: 0, risk_label: "High", risk_color: "#B0632F",

@@ -4,7 +4,7 @@ import { db } from "../db.js";
 import {
   CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
   logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
-  validateCustomValues, valueById, valueByMapsTo, valuesFor,
+  todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -28,8 +28,28 @@ function requirementErrors(objectType: string, at: string[], body: Record<string
   return errs;
 }
 
+/**
+ * E11: pagination is server-side. With ?page= the response becomes
+ * { rows, total, page, page_size } (default page size 25) and filters/sorts
+ * apply to the FULL result set before slicing. Without ?page= the plain
+ * array is returned unchanged (kanban, dashboards, dropdowns).
+ */
+export function paginate<T>(out: T[], req: any, res: any): boolean {
+  if (req.query.page === undefined) return false;
+  const size = Math.min(200, Math.max(1, Number(req.query.page_size) || 25));
+  const page = Math.max(1, Number(req.query.page) || 1);
+  res.json({ rows: out.slice((page - 1) * size, page * size), total: out.length, page, page_size: size });
+  return true;
+}
+
+const PROJECT_SORT_KEYS = new Set([
+  "project_code", "mcp_number", "mcp_name", "project_name", "assignee_name", "annualized_premium",
+  "status_label", "rag", "risk_label", "assignment_date", "target_date", "days_in_status",
+  "open_task_count", "closed_date", "created_date",
+]);
+
 projects.get("/", (req, res) => {
-  const { scope, assignee_id, rag, risk_level_id, template_id, q } = req.query as Record<string, string>;
+  const { scope, assignee_id, rag, risk_level_id, template_id, q, sort, dir } = req.query as Record<string, string>;
   let rows = db.prepare("SELECT * FROM projects ORDER BY created_date DESC").all() as any[];
   let out = rows.map((p) => serializeProject(p));
   if (scope === "active") out = out.filter((p) => !p.is_closed);
@@ -41,9 +61,20 @@ projects.get("/", (req, res) => {
   if (q) {
     const s = q.toLowerCase();
     out = out.filter((p) =>
-      [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name].some((f) => f?.toLowerCase().includes(s))
+      [p.mcp_name, p.mcp_number, p.project_code, p.project_name, p.assignee_name, p.status_label, p.close_reason_label]
+        .some((f) => f?.toLowerCase().includes(s))
     );
   }
+  // E11: sorting happens server-side so it covers the full result set
+  if (sort && (PROJECT_SORT_KEYS.has(sort) || sort.startsWith("cf_"))) {
+    const d = dir === "desc" ? -1 : 1;
+    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    out = [...out].sort((a, b) => {
+      const av = keyOf(a), bv = keyOf(b);
+      return (av < bv ? -1 : av > bv ? 1 : 0) * d;
+    });
+  }
+  if (paginate(out, req, res)) return;
   res.json(out);
 });
 
@@ -56,6 +87,7 @@ projects.get("/:id", (req, res) => {
 const createSchema = z.object({
   mcp_number: z.string().min(1),
   mcp_name: z.string().min(1),
+  project_name: z.string().nullish(), // E3: optional at creation
   assignee_id: z.number(),
   annualized_premium: z.number({ required_error: "Annualized Premium (AP) is required", invalid_type_error: "Annualized Premium (AP) must be a dollar amount" }).nonnegative("Annualized Premium (AP) must be a dollar amount"),
   assignment_date: z.string().min(1),
@@ -71,7 +103,7 @@ projects.post("/", (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const b = parsed.data;
 
-  const custom = validateCustomValues(b.custom);
+  const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
@@ -93,12 +125,12 @@ projects.post("/", (req, res) => {
     const code = nextProjectCode();
     const pid = db
       .prepare(
-        `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, annualized_premium, assignment_date, target_date, template_id, status_id, risk_level_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (project_code, mcp_number, mcp_name, project_name, assignee_id, annualized_premium, assignment_date, target_date, template_id, status_id, risk_level_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(code, b.mcp_number, b.mcp_name, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
+      .run(code, b.mcp_number, b.mcp_name, b.project_name?.trim() || null, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
       .lastInsertRowid as number;
-    saveCustomValues(pid, custom.parsed);
+    saveCustomValues("project", pid, custom.parsed);
     generateTasksFromTemplate(pid, b.template_id, b.assignment_date, b.assignee_id);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
     return pid;
@@ -119,10 +151,10 @@ projects.patch("/:id", (req, res) => {
       return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
     req.body.annualized_premium = n;
   }
-  const custom = "custom" in req.body ? validateCustomValues(req.body.custom) : null;
+  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
-  const allowed = ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
+  const allowed = ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
   const sets: string[] = [];
   const vals: any[] = [];
   for (const f of allowed) {
@@ -131,7 +163,7 @@ projects.patch("/:id", (req, res) => {
   if (sets.length) {
     db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, p.id);
   }
-  if (custom) saveCustomValues(p.id, custom.parsed);
+  if (custom) saveCustomValues("project", p.id, custom.parsed);
 
   // Audit-log the changes that matter to the project history
   if ("annualized_premium" in req.body && Number(req.body.annualized_premium) !== p.annualized_premium) {
@@ -175,6 +207,8 @@ projects.post("/:id/status", (req, res) => {
   const { status_id, user_id } = req.body as { status_id: number; user_id: number };
   const target = valueById(status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
+  if ((target as any).archived)
+    return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned` });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are never reopened (§2.2). Create a new project for this MCP instead." });
 
   if (target.maps_to === "closed") {
@@ -182,6 +216,11 @@ projects.post("/:id/status", (req, res) => {
     if (problems.length)
       return res.status(422).json({ error: "Closure requirements not met", problems, needs_close_form: true });
     return res.status(422).json({ error: "Use the Close Project form", needs_close_form: true, problems: [] });
+  }
+  // E5: Cancelled is a closure status — it goes through the same closure
+  // workflow (/close with cancelled:true), never a plain status flip.
+  if (target.maps_to === "cancelled") {
+    return res.status(422).json({ error: "Use the Cancel Project form", needs_close_form: true, cancelled: true, problems: [] });
   }
 
   const old = valueById(p.status_id);
@@ -200,6 +239,8 @@ const closeSchema = z.object({
   close_reason_id: z.number().nullish(),
   override: z.boolean().nullish(),
   override_reason: z.string().nullish(),
+  /** E5: cancel instead of close — same closure processing, different inputs. */
+  cancelled: z.boolean().nullish(),
 });
 
 projects.post("/:id/close", (req, res) => {
@@ -210,23 +251,33 @@ projects.post("/:id/close", (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const b = parsed.data;
 
-  const problems = closureProblems(p.id, b);
+  const problems = closureProblems(p.id, b, { cancelled: !!b.cancelled });
   if (problems.length && !b.override)
     return res.status(422).json({ error: "Closure requirements not met", problems });
   if (problems.length && b.override && !b.override_reason?.trim())
     return res.status(422).json({ error: "An override reason is required", problems });
 
-  const closed = valueByMapsTo("Project Status", "closed")!;
+  const closed = valueByMapsTo("Project Status", b.cancelled ? "cancelled" : "closed")!;
   const old = valueById(p.status_id);
   db.prepare(
     `UPDATE projects SET status_id = ?, status_changed_date = datetime('now'), closed_date = datetime('now'),
-       closed_by = ?, close_reason_id = ?, final_summary = ? WHERE id = ?`
+       closed_by = ?, close_reason_id = ?, final_summary = ?, rag_override = NULL, rag_override_reason = NULL WHERE id = ?`
   ).run(closed.id, b.user_id, b.close_reason_id ?? null, b.final_summary ?? null, p.id);
+  // B2: a manual RAG override outlives its purpose at closure — clearing it
+  // here (audited) keeps historical reporting on "Closed = Green" instead of
+  // freezing a stale Red/Amber on a read-only record forever.
+  if (p.rag_override) {
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `cleared manual RAG override (${String(p.rag_override).toUpperCase()}: ${p.rag_override_reason ?? "no reason recorded"}) as part of closure — closed projects report Green`,
+    });
+  }
+  const verb = b.cancelled ? "cancelled" : "closed";
   logActivity({
     project_id: p.id, user_id: b.user_id, kind: "status_change",
     note: b.override
-      ? `closed project with override: ${b.override_reason}`
-      : `closed project`,
+      ? `${verb} project with override: ${b.override_reason}`
+      : `${verb} project`,
     old_status: old?.label, new_status: closed.label,
   });
   res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id)));
@@ -236,6 +287,8 @@ projects.post("/:id/close", (req, res) => {
 projects.post("/:id/rag-override", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
+  // Closed projects report "Closed = Green" (B2) — overrides can't be re-applied
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
   const { rag, reason, user_id } = req.body as { rag: string | null; reason?: string; user_id: number };
   if (rag && !["red", "amber", "green"].includes(rag)) return res.status(400).json({ error: "Invalid RAG value" });
   if (rag && !reason?.trim()) return res.status(400).json({ error: "An override reason is required for auditability" });
@@ -255,7 +308,10 @@ projects.post("/:id/tasks", (req, res) => {
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
   const { name, description, due_date, assigned_to, priority_id, required, user_id, initial_note } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: "Task name is required" });
-  const reqErrs = requirementErrors("task", ["creation", "always"], req.body);
+  // E9: task custom fields validate exactly like project ones
+  const custom = validateCustomValues("task", req.body.custom);
+  if (custom.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
+  const reqErrs = requirementErrors("task", ["creation", "always"], { ...req.body, ...custom.flat });
   if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
 
   const maxOrder = db
@@ -269,6 +325,7 @@ projects.post("/:id/tasks", (req, res) => {
     )
     .run(p.id, name.trim(), description ?? "", (maxOrder.m ?? 0) + 1, due_date ?? null, assigned_to ?? null, notStarted.id, priority_id ?? null, required ? 1 : 0)
     .lastInsertRowid as number;
+  saveCustomValues("task", id, custom.parsed);
   logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "system", note: `added ad-hoc task "${name.trim()}"` });
   if (initial_note?.trim())
     logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "note", note: initial_note.trim() });
@@ -287,9 +344,9 @@ tasks.get("/", (req, res) => {
   const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral(); // E6: overdue is judged on the Central calendar date
 
-  let sql = `SELECT t.*, p.project_code, p.mcp_name, p.assignee_id AS project_assignee_id FROM project_tasks t
+  let sql = `SELECT t.*, p.project_code, p.mcp_name, p.project_name, p.assignee_id AS project_assignee_id FROM project_tasks t
              JOIN projects p ON p.id = t.project_id
              WHERE p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`;
   const params: any[] = [...closedStatusIds];
@@ -307,7 +364,9 @@ tasks.get("/", (req, res) => {
   }
   sql += " ORDER BY (t.due_date IS NULL), t.due_date, p.project_code, t.step_order";
   const rows = db.prepare(sql).all(...params) as any[];
-  res.json(rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name })));
+  const out = rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name, project_name: t.project_name }));
+  if (paginate(out, req, res)) return; // E11
+  res.json(out);
 });
 
 /** All activities linked to this task through the many-to-many join (v2 §6). */
@@ -330,23 +389,48 @@ tasks.patch("/:id", (req, res) => {
   const tplTask = t.template_task_id
     ? (db.prepare("SELECT can_edit FROM template_tasks WHERE id = ?").get(t.template_task_id) as any)
     : null;
+  // E9: task custom fields save through the same engine as project ones
+  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom) : null;
+  if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
   const sets: string[] = [];
   const vals: any[] = [];
   for (const f of editable) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
   if (sets.length) db.prepare(`UPDATE project_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals, t.id);
+  if (custom) saveCustomValues("task", t.id, custom.parsed);
   res.json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)));
 });
 
+/**
+ * E4: Delete replaces Skipped as the way to take a task out of a project —
+ * any task type can be deleted (a required task that will never be done is
+ * deleted outright rather than skipped). Linked data is unlinked and
+ * preserved, never cascaded: time logs and notes/activities are re-parented
+ * to the project so timecards, rollups and history lose nothing.
+ */
 tasks.delete("/:id", (req, res) => {
   const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
   if (!t) return res.status(404).json({ error: "Task not found" });
-  if (t.task_type !== "adhoc")
-    return res.status(400).json({ error: "Standard template tasks cannot be removed (§2.4)" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
-  db.prepare("DELETE FROM project_tasks WHERE id = ?").run(t.id);
+  const userId = Number(req.query.user_id ?? req.body?.user_id) || null;
+
+  const remove = db.transaction(() => {
+    const logs = db.prepare("UPDATE time_logs SET project_task_id = NULL WHERE project_task_id = ?").run(t.id);
+    const acts = db.prepare("UPDATE activities SET project_task_id = NULL WHERE project_task_id = ?").run(t.id);
+    // many-to-many links go with the task; the activity records themselves stay
+    db.prepare("DELETE FROM task_activity_links WHERE project_task_id = ?").run(t.id);
+    db.prepare("DELETE FROM project_tasks WHERE id = ?").run(t.id);
+    const kept: string[] = [];
+    if (logs.changes) kept.push(`${logs.changes} time log(s) re-parented to the project`);
+    if (acts.changes) kept.push(`${acts.changes} note/activity record(s) kept at project level`);
+    logActivity({
+      project_id: p.id, user_id: userId, kind: "system",
+      note: `deleted task "${t.name}"${kept.length ? ` — ${kept.join(", ")}` : ""}`,
+    });
+  });
+  remove();
   res.json({ ok: true });
 });
 
@@ -366,17 +450,16 @@ tasks.post("/:id/status", (req, res) => {
   };
   const target = valueById(status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
+  // E4: archived statuses (Skipped) can't be newly assigned — legacy tasks
+  // keep their status; delete the task instead of skipping it.
+  if ((target as any).archived && target.id !== t.status_id)
+    return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned. Delete the task instead.` });
   const old = valueById(t.status_id);
 
-  if (target.maps_to === "skipped") {
-    if (t.required && t.template_task_id) {
-      const tpl = db.prepare("SELECT can_skip FROM template_tasks WHERE id = ?").get(t.template_task_id) as any;
-      if (!tpl?.can_skip && !skip_reason?.trim())
-        return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
-    }
-    if (t.required && !skip_reason?.trim())
-      return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
-  }
+  // Legacy skip rule kept for completeness; unreachable while Skipped is
+  // archived (guarded above). E7 removed the never-consumed can_skip flag.
+  if (target.maps_to === "skipped" && t.required && !skip_reason?.trim())
+    return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
 
   // Soft warning (§4.2): completing while an earlier required task is open
   let warning: string | null = null;
@@ -397,7 +480,7 @@ tasks.post("/:id/status", (req, res) => {
   ).run(
     status_id,
     target.maps_to === "skipped" ? (skip_reason ?? null) : t.skip_reason,
-    isDone ? new Date().toISOString().slice(0, 10) : null,
+    isDone ? todayCentral() : null,
     isDone ? user_id : null,
     t.id
   );

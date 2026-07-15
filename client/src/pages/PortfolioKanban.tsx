@@ -1,14 +1,14 @@
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useDraggable, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, PickValue, Project } from "../api";
+import { api, ApiError, fmtCurrency, PickValue, Project } from "../api";
 import { renderProjectField, useLayout } from "../components/fields";
 import { inputCls, ragEdge, Skeleton } from "../components/ui";
 import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Portfolio Kanban — v1's standalone screen, now a view state inside Projects (v2 §1). */
 export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) {
-  const { activeValues } = useConfig();
+  const { activeValues, archivedValues } = useConfig();
   const { users, currentUser } = useSession();
   const toast = useToast();
   const navigate = useNavigate();
@@ -22,8 +22,13 @@ export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const statuses = activeValues("Project Status").filter((v) => !["closed", "cancelled"].includes(v.maps_to ?? ""));
+  // B1: an archived status can't be assigned anymore, but projects still in it
+  // must stay visible — render a column for any archived status holding projects.
+  const archivedWithProjects = archivedValues("Project Status").filter(
+    (v) => !["closed", "cancelled"].includes(v.maps_to ?? "") && (projects ?? []).some((p) => p.status_id === v.id)
+  );
   const closedCol = activeValues("Project Status").find((v) => v.maps_to === "closed");
-  const columns = closedCol ? [...statuses, closedCol] : statuses;
+  const columns = [...statuses, ...archivedWithProjects, ...(closedCol ? [closedCol] : [])];
 
   const load = useCallback(() => {
     const qs = new URLSearchParams();
@@ -89,6 +94,12 @@ export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) 
             onChange={(e) => setFilters({ ...filters, risk_level_id: e.target.value })}>
             <option value="">All risk levels</option>
             {activeValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            {/* B1: archived values remain findable in filters */}
+            {archivedValues("Risk Level").length > 0 && (
+              <optgroup label="Archived">
+                {archivedValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+              </optgroup>
+            )}
           </select>
           <select className={inputCls + " !w-auto"} value={filters.template_id} aria-label="Filter by template"
             onChange={(e) => setFilters({ ...filters, template_id: e.target.value })}>
@@ -116,13 +127,18 @@ export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) 
 
 function Column({ col, projects, cardFields }: { col: PickValue; projects: Project[]; cardFields: any[] }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id });
+  // E10: each status column shows its project count AND total Annualized Premium
+  const totalAp = projects.reduce((s, p) => s + (p.annualized_premium ?? 0), 0);
   return (
     <div className="flex w-72 shrink-0 flex-col rounded-xl bg-canvas">
-      {/* Sticky header with live count badge (§10.4) */}
+      {/* Sticky header with live count + AP badges (§10.4, E10) */}
       <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-xl bg-canvas px-3 pb-2 pt-1">
         <span className="h-2 w-2 rounded-full" style={{ backgroundColor: col.color }} aria-hidden />
         <span className="text-[13px] font-semibold">{col.label}</span>
-        <span className="ml-auto rounded-full bg-hairline px-2 py-px font-mono text-[11px] font-medium text-muted">{projects.length}</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          <span className="font-mono text-[11px] font-medium text-muted" title="Total Annualized Premium in this column">{fmtCurrency(totalAp)}</span>
+          <span className="rounded-full bg-hairline px-2 py-px font-mono text-[11px] font-medium text-muted">{projects.length}</span>
+        </span>
       </div>
       <div
         ref={setNodeRef}

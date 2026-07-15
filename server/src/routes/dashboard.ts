@@ -1,15 +1,15 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { CLOSED_KEYS, DONE_TASK_KEYS, serializeActivity, serializeProject, serializeWin, valuesFor } from "../core.js";
+import { CLOSED_KEYS, DONE_TASK_KEYS, serializeActivity, serializeProject, serializeWin, todayCentral, valuesFor } from "../core.js";
 
 export const dashboard = Router();
 
 function isoOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-/** Monday of the week containing `d` — same convention as the timecard grid. */
-function weekStartIso(d: Date): string {
-  const x = new Date(d);
+/** Monday of the week containing the ISO date — same convention as the timecard grid. */
+function weekStartIso(iso: string): string {
+  const x = new Date(iso + "T00:00:00");
   x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
   return isoOf(x);
 }
@@ -34,14 +34,19 @@ dashboard.get("/", (req, res) => {
   const active = all.filter((p) => !p.is_closed);
 
   const ragBreakdown = { red: 0, amber: 0, green: 0 } as Record<string, number>;
-  for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+  // E10: total Annualized Premium alongside the count for each RAG state
+  const ragAp = { red: 0, amber: 0, green: 0 } as Record<string, number>;
+  for (const p of active) {
+    ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+    ragAp[p.rag] = (ragAp[p.rag] ?? 0) + (p.annualized_premium ?? 0);
+  }
 
   const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
   const blockedId = blockedVal?.id;
   const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const now = new Date();
-  const today = isoOf(now);
+  const today = todayCentral(); // E6: "today" is the Central calendar date
   const yesterday = addDaysIso(today, -1);
   const weekAgo = addDaysIso(today, -7);
 
@@ -90,7 +95,7 @@ dashboard.get("/", (req, res) => {
   };
 
   // ---- "This Week" panel (§2.2): tasks due + logged/scheduled activities, Mon–Sun ----
-  const wkStart = weekStartIso(now);
+  const wkStart = weekStartIso(today);
   const wkEnd = addDaysIso(wkStart, 6);
   const nowStamp = now.toISOString().slice(0, 16).replace("T", " ");
 
@@ -165,6 +170,7 @@ dashboard.get("/", (req, res) => {
     closed_this_week: closedThisWeek,
     trends,
     rag_breakdown: ragBreakdown,
+    rag_ap: ragAp,
     overdue_tasks: overdue.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, due_date: t.due_date, project_code: t.project_code, mcp_name: t.mcp_name })),
     blocked_tasks: blocked.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, project_code: t.project_code, mcp_name: t.mcp_name })),
     my_open_tasks: myOpen.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, due_date: t.due_date, project_code: t.project_code, mcp_name: t.mcp_name })),
