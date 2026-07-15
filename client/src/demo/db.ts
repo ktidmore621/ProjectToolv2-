@@ -76,6 +76,8 @@ function load(): DemoDB | null {
       // B1: archived picklist values / B4: win → system-note link
       for (const v of loaded.picklist_values) v.archived ??= 0;
       for (const w of loaded.wins) w.activity_id ??= null;
+      // E4: Skipped is retired — archived, never assignable again
+      for (const v of loaded.picklist_values) if (v.maps_to === "skipped") v.archived = 1;
       if (!loaded.users.some((u) => u.name === "Leader" || u.email === "leader@example.com"))
         loaded.users.push({
           id: ++loaded.seq, name: "Leader", email: "leader@example.com", is_active: 1,
@@ -211,6 +213,8 @@ function freshDb(): void {
     ["Blocked", "#C2554E", "blocked"], ["Complete", "#4E9468", "complete"],
     ["Skipped", "#94A3B8", "skipped"], ["Cancelled", "#94A3B8", "cancelled"],
   ]);
+  // E4: Skipped is seeded archived — renders on legacy data, never assignable
+  for (const v of db.picklist_values) if (v.maps_to === "skipped") v.archived = 1;
   makeList("RAG Status", "project", 1, [
     ["Red", "#C2554E", "red"], ["Amber", "#C99239", "amber"], ["Green", "#4E9468", "green", 1],
   ]);

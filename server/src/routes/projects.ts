@@ -175,6 +175,8 @@ projects.post("/:id/status", (req, res) => {
   const { status_id, user_id } = req.body as { status_id: number; user_id: number };
   const target = valueById(status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
+  if ((target as any).archived)
+    return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned` });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are never reopened (§2.2). Create a new project for this MCP instead." });
 
   if (target.maps_to === "closed") {
@@ -350,14 +352,35 @@ tasks.patch("/:id", (req, res) => {
   res.json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)));
 });
 
+/**
+ * E4: Delete replaces Skipped as the way to take a task out of a project —
+ * any task type can be deleted (a required task that will never be done is
+ * deleted outright rather than skipped). Linked data is unlinked and
+ * preserved, never cascaded: time logs and notes/activities are re-parented
+ * to the project so timecards, rollups and history lose nothing.
+ */
 tasks.delete("/:id", (req, res) => {
   const t = db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(req.params.id) as any;
   if (!t) return res.status(404).json({ error: "Task not found" });
-  if (t.task_type !== "adhoc")
-    return res.status(400).json({ error: "Standard template tasks cannot be removed (§2.4)" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(t.project_id) as any;
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
-  db.prepare("DELETE FROM project_tasks WHERE id = ?").run(t.id);
+  const userId = Number(req.query.user_id ?? req.body?.user_id) || null;
+
+  const remove = db.transaction(() => {
+    const logs = db.prepare("UPDATE time_logs SET project_task_id = NULL WHERE project_task_id = ?").run(t.id);
+    const acts = db.prepare("UPDATE activities SET project_task_id = NULL WHERE project_task_id = ?").run(t.id);
+    // many-to-many links go with the task; the activity records themselves stay
+    db.prepare("DELETE FROM task_activity_links WHERE project_task_id = ?").run(t.id);
+    db.prepare("DELETE FROM project_tasks WHERE id = ?").run(t.id);
+    const kept: string[] = [];
+    if (logs.changes) kept.push(`${logs.changes} time log(s) re-parented to the project`);
+    if (acts.changes) kept.push(`${acts.changes} note/activity record(s) kept at project level`);
+    logActivity({
+      project_id: p.id, user_id: userId, kind: "system",
+      note: `deleted task "${t.name}"${kept.length ? ` — ${kept.join(", ")}` : ""}`,
+    });
+  });
+  remove();
   res.json({ ok: true });
 });
 
@@ -377,6 +400,10 @@ tasks.post("/:id/status", (req, res) => {
   };
   const target = valueById(status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
+  // E4: archived statuses (Skipped) can't be newly assigned — legacy tasks
+  // keep their status; delete the task instead of skipping it.
+  if ((target as any).archived && target.id !== t.status_id)
+    return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned. Delete the task instead.` });
   const old = valueById(t.status_id);
 
   if (target.maps_to === "skipped") {

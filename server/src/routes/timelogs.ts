@@ -24,13 +24,15 @@ function serializeLog(l: any) {
   };
 }
 
-/** Query: user_id, project_id, start, end (ISO dates, inclusive). */
+/** Query: user_id, project_id, task_id, start, end (ISO dates, inclusive). */
 timelogs.get("/", (req, res) => {
-  const { user_id, project_id, start, end } = req.query as Record<string, string>;
+  const { user_id, project_id, task_id, start, end } = req.query as Record<string, string>;
   let sql = "SELECT * FROM time_logs WHERE 1=1";
   const params: any[] = [];
   if (user_id) { sql += " AND user_id = ?"; params.push(Number(user_id)); }
   if (project_id) { sql += " AND project_id = ?"; params.push(Number(project_id)); }
+  // E1: the task modal lists the same records the Time Log area shows — one store, two surfaces
+  if (task_id) { sql += " AND project_task_id = ?"; params.push(Number(task_id)); }
   if (start) { sql += " AND date >= ?"; params.push(start); }
   if (end) { sql += " AND date <= ?"; params.push(end); }
   sql += " ORDER BY date DESC, id DESC";

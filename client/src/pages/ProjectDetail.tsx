@@ -7,7 +7,8 @@ import { CustomFieldInputs, renderProjectField, renderTaskField, useCustomFields
 import { ActivityTypeIcon, TrophyIcon } from "../components/icons";
 import { Page } from "../components/Layout";
 import { TaskKanban } from "../components/TaskKanban";
-import { TaskModal } from "../components/TaskModal";
+import { ConfirmDeleteTaskModal, TaskModal } from "../components/TaskModal";
+import { TrashIcon } from "../components/icons";
 import { Btn, Card, Chip, CsvLink, EmptyState, Field, inputCls, Modal, Mono, RagChip, Skeleton, tint } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
 
@@ -29,6 +30,7 @@ export function ProjectDetail() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [showRag, setShowRag] = useState(false);
   const [skipTask, setSkipTask] = useState<{ task: Task; statusId: number } | null>(null);
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
   const [highlightActivity, setHighlightActivity] = useState<number | null>(null);
@@ -55,6 +57,19 @@ export function ProjectDetail() {
       if (fresh && fresh !== detailTask) setDetailTask(fresh);
     }
   }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** E4: permanent, confirmed deletion — time logs & activities are preserved at project level. */
+  async function confirmDeleteTask(task: Task) {
+    try {
+      await api.del(`/api/tasks/${task.id}?user_id=${currentUser?.id}`);
+      toast(`Deleted task "${task.name}". Its time logs and activity history stay on the project.`, "success");
+      setDeleteTask(null);
+      load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Delete failed", "error");
+      setDeleteTask(null);
+    }
+  }
 
   /** Shared task status change — same rules from list, kanban, or dropdown (§4.2). */
   async function changeTaskStatus(task: Task, statusId: number, extra?: { skip_reason?: string }) {
@@ -183,6 +198,7 @@ export function ProjectDetail() {
                   ))}
                   {!readOnly && (
                     <td className="px-3 py-2">
+                      <span className="flex items-center gap-1.5">
                       <select
                         aria-label={`Status of ${t.name}`}
                         className="rounded-lg border border-hairline bg-surface px-2 py-1 text-xs focus:border-accent focus:outline-none"
@@ -195,6 +211,12 @@ export function ProjectDetail() {
                         )}
                         {activeValues("Task Status").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
                       </select>
+                      {/* E4: Delete replaces Skipped as the way to drop a task */}
+                      <button onClick={() => setDeleteTask(t)} aria-label={`Delete ${t.name}`} title="Delete this task"
+                        className="rounded p-1 text-muted transition-colors hover:bg-canvas hover:text-rag-red">
+                        <TrashIcon size={14} />
+                      </button>
+                      </span>
                       {t.skip_reason && <div className="mt-1 text-[11px] text-muted">Skipped: {t.skip_reason}</div>}
                     </td>
                   )}
@@ -229,6 +251,9 @@ export function ProjectDetail() {
       {showClose && <CloseModal project={project} onClose={() => setShowClose(false)} onClosed={load} />}
       {showAddTask && <AddTaskModal project={project} users={users} onClose={() => setShowAddTask(false)} onAdded={load} />}
       {showRag && <RagModal project={project} onClose={() => setShowRag(false)} onSaved={load} />}
+      {deleteTask && (
+        <ConfirmDeleteTaskModal task={deleteTask} onCancel={() => setDeleteTask(null)} onConfirm={() => confirmDeleteTask(deleteTask)} />
+      )}
       {skipTask && (
         <SkipModal
           task={skipTask.task}
@@ -413,7 +438,8 @@ function CloseModal({ project, onClose, onClosed }: { project: Project; onClose:
     <Modal title={`Close ${project.project_code} — ${project.mcp_name}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
         <p className="text-xs text-muted">
-          Closing is permanent — closed projects are never reopened (§2.2). All required tasks must be Complete or formally Skipped.
+          Closing is permanent — closed projects are never reopened (§2.2). All required tasks must be Complete
+          (or deleted if they'll never be done; tasks skipped before Skipped was retired still count).
         </p>
         <Field label="Final summary">
           <textarea className={inputCls + " h-24"} value={summary} onChange={(e) => setSummary(e.target.value)}

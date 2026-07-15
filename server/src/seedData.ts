@@ -67,6 +67,9 @@ export function seed(opts: { demo?: boolean } = {}) {
     ["Skipped", "#94A3B8", "skipped"],
     ["Cancelled", "#94A3B8", "cancelled"],
   ]);
+  // E4: Skipped is retired — seeded archived so it renders on any legacy data
+  // but can never be newly assigned. (Existing DBs get the same via db.ts.)
+  db.prepare("UPDATE picklist_values SET archived = 1 WHERE maps_to = 'skipped'").run();
   makeList("RAG Status", "project", 1, [
     ["Red", "#C2554E", "red"],
     ["Amber", "#C99239", "amber"],

@@ -737,6 +737,7 @@ route("POST", "/api/projects/:id/status", (m, _q, b) => {
   if (!p) return err(404, "Project not found");
   const target = valueById(b.status_id);
   if (!target) return err(400, "Unknown status");
+  if (target.archived) return err(400, `"${target.label}" is archived and can no longer be assigned`);
   if (isClosedStatus(p.status_id))
     return err(400, "Closed projects are never reopened (§2.2). Create a new project for this MCP instead.");
   if (target.maps_to === "closed") {
@@ -877,14 +878,25 @@ route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   for (const f of editable) if (f in b) t[f] = b[f];
   return ok(serializeTask(t));
 });
-route("DELETE", "/api/tasks/:id", (m) => {
+/** E4: Delete replaces Skipped — unlink and preserve time logs & activities, never cascade. */
+route("DELETE", "/api/tasks/:id", (m, q, b) => {
   const t = db.project_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Task not found");
-  if (t.task_type !== "adhoc") return err(400, "Standard template tasks cannot be removed (§2.4)");
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
-  db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
+  const userId = Number(q.get("user_id") ?? b?.user_id) || null;
+  let logCount = 0, actCount = 0;
+  for (const l of db.time_logs) if (l.project_task_id === t.id) { l.project_task_id = null; logCount++; }
+  for (const a of db.activities) if (a.project_task_id === t.id) { a.project_task_id = null; actCount++; }
   db.task_activity_links = db.task_activity_links.filter((l) => l.project_task_id !== t.id);
+  db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
+  const kept: string[] = [];
+  if (logCount) kept.push(`${logCount} time log(s) re-parented to the project`);
+  if (actCount) kept.push(`${actCount} note/activity record(s) kept at project level`);
+  logActivity({
+    project_id: p.id, user_id: userId, kind: "system",
+    note: `deleted task "${t.name}"${kept.length ? ` — ${kept.join(", ")}` : ""}`,
+  });
   return ok({ ok: true });
 });
 route("POST", "/api/tasks/:id/status", (m, _q, b) => {
@@ -894,6 +906,9 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const target = valueById(b.status_id);
   if (!target) return err(400, "Unknown status");
+  // E4: archived statuses (Skipped) can't be newly assigned
+  if (target.archived && target.id !== t.status_id)
+    return err(400, `"${target.label}" is archived and can no longer be assigned. Delete the task instead.`);
   const old = valueById(t.status_id);
 
   if (target.maps_to === "skipped" && t.required && !b.skip_reason?.trim())
@@ -928,6 +943,8 @@ route("GET", "/api/timelogs", (_m, q) => {
   let out = db.time_logs.slice();
   if (q.get("user_id")) out = out.filter((l) => l.user_id === Number(q.get("user_id")));
   if (q.get("project_id")) out = out.filter((l) => l.project_id === Number(q.get("project_id")));
+  // E1: the task modal lists the same records the Time Log area shows
+  if (q.get("task_id")) out = out.filter((l) => l.project_task_id === Number(q.get("task_id")));
   if (q.get("start")) out = out.filter((l) => l.date >= q.get("start")!);
   if (q.get("end")) out = out.filter((l) => l.date <= q.get("end")!);
   out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));

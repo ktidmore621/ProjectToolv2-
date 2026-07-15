@@ -232,6 +232,16 @@ ensureColumn("picklist_values", "archived", "INTEGER NOT NULL DEFAULT 0");
 // can clean up the note instead of orphaning it.
 ensureColumn("wins", "activity_id", "INTEGER REFERENCES activities(id)");
 
+// E4: retire the Skipped task status by archiving it (governing principle:
+// used values are archived, never deleted). It disappears from the status
+// dropdown for all new/edited tasks; tasks already Skipped keep displaying it
+// in lists, history and reporting, and no data is migrated or rewritten.
+db.prepare(
+  `UPDATE picklist_values SET archived = 1
+   WHERE maps_to = 'skipped'
+     AND picklist_id IN (SELECT id FROM picklists WHERE name = 'Task Status')`
+).run();
+
 // B3: seed the project-code counter from the highest code ever issued (not the
 // row count — deleted projects must never free their numbers for reuse).
 db.prepare(

@@ -285,7 +285,13 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
   }
 }
 
-/** Closure requirements per §4.8. Returns list of unmet requirements. */
+/**
+ * Closure requirements per §4.8. Returns list of unmet requirements.
+ * E4: required tasks must be Complete (or deleted) going forward — but
+ * legacy Skipped/Cancelled tasks still satisfy closure (DONE_TASK_KEYS keeps
+ * 'skipped'), so projects with historically skipped tasks are not
+ * retroactively invalidated. Skipped can no longer be newly assigned.
+ */
 export function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null }): string[] {
   const problems: string[] = [];
   const doneIds = valuesFor("Task Status")
