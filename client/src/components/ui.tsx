@@ -132,6 +132,28 @@ export function Mono({ children, className }: { children: ReactNode; className?:
   return <span className={`font-mono text-[0.92em] ${className ?? ""}`}>{children}</span>;
 }
 
+/** E11: shared pagination footer for server-paginated list views (default page size 25). */
+export function Pager({ page, pageSize, total, onPage }: {
+  page: number; pageSize: number; total: number; onPage: (p: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (total <= pageSize && page === 1) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(total, page * pageSize);
+  return (
+    <div className="mt-3 flex items-center justify-between text-xs text-muted">
+      <span>
+        Showing <Mono>{total === 0 ? 0 : from}–{to}</Mono> of <Mono>{total}</Mono>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Btn small kind="ghost" disabled={page <= 1} onClick={() => onPage(page - 1)}>← Prev</Btn>
+        <span>Page <Mono>{page}</Mono> / <Mono>{pages}</Mono></span>
+        <Btn small kind="ghost" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next →</Btn>
+      </span>
+    </div>
+  );
+}
+
 /** CSV export link — works against the server normally, generates the file in-browser in demo mode. */
 export function CsvLink({ href, children, disabled }: { href: string; children: ReactNode; disabled?: boolean }) {
   return (

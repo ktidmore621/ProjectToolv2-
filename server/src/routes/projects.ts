@@ -28,8 +28,28 @@ function requirementErrors(objectType: string, at: string[], body: Record<string
   return errs;
 }
 
+/**
+ * E11: pagination is server-side. With ?page= the response becomes
+ * { rows, total, page, page_size } (default page size 25) and filters/sorts
+ * apply to the FULL result set before slicing. Without ?page= the plain
+ * array is returned unchanged (kanban, dashboards, dropdowns).
+ */
+export function paginate<T>(out: T[], req: any, res: any): boolean {
+  if (req.query.page === undefined) return false;
+  const size = Math.min(200, Math.max(1, Number(req.query.page_size) || 25));
+  const page = Math.max(1, Number(req.query.page) || 1);
+  res.json({ rows: out.slice((page - 1) * size, page * size), total: out.length, page, page_size: size });
+  return true;
+}
+
+const PROJECT_SORT_KEYS = new Set([
+  "project_code", "mcp_number", "mcp_name", "project_name", "assignee_name", "annualized_premium",
+  "status_label", "rag", "risk_label", "assignment_date", "target_date", "days_in_status",
+  "open_task_count", "closed_date", "created_date",
+]);
+
 projects.get("/", (req, res) => {
-  const { scope, assignee_id, rag, risk_level_id, template_id, q } = req.query as Record<string, string>;
+  const { scope, assignee_id, rag, risk_level_id, template_id, q, sort, dir } = req.query as Record<string, string>;
   let rows = db.prepare("SELECT * FROM projects ORDER BY created_date DESC").all() as any[];
   let out = rows.map((p) => serializeProject(p));
   if (scope === "active") out = out.filter((p) => !p.is_closed);
@@ -41,9 +61,20 @@ projects.get("/", (req, res) => {
   if (q) {
     const s = q.toLowerCase();
     out = out.filter((p) =>
-      [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name].some((f) => f?.toLowerCase().includes(s))
+      [p.mcp_name, p.mcp_number, p.project_code, p.project_name, p.assignee_name, p.status_label, p.close_reason_label]
+        .some((f) => f?.toLowerCase().includes(s))
     );
   }
+  // E11: sorting happens server-side so it covers the full result set
+  if (sort && (PROJECT_SORT_KEYS.has(sort) || sort.startsWith("cf_"))) {
+    const d = dir === "desc" ? -1 : 1;
+    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    out = [...out].sort((a, b) => {
+      const av = keyOf(a), bv = keyOf(b);
+      return (av < bv ? -1 : av > bv ? 1 : 0) * d;
+    });
+  }
+  if (paginate(out, req, res)) return;
   res.json(out);
 });
 
@@ -333,7 +364,9 @@ tasks.get("/", (req, res) => {
   }
   sql += " ORDER BY (t.due_date IS NULL), t.due_date, p.project_code, t.step_order";
   const rows = db.prepare(sql).all(...params) as any[];
-  res.json(rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name, project_name: t.project_name })));
+  const out = rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name, project_name: t.project_name }));
+  if (paginate(out, req, res)) return; // E11
+  res.json(out);
 });
 
 /** All activities linked to this task through the many-to-many join (v2 §6). */

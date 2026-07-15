@@ -34,7 +34,12 @@ dashboard.get("/", (req, res) => {
   const active = all.filter((p) => !p.is_closed);
 
   const ragBreakdown = { red: 0, amber: 0, green: 0 } as Record<string, number>;
-  for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+  // E10: total Annualized Premium alongside the count for each RAG state
+  const ragAp = { red: 0, amber: 0, green: 0 } as Record<string, number>;
+  for (const p of active) {
+    ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+    ragAp[p.rag] = (ragAp[p.rag] ?? 0) + (p.annualized_premium ?? 0);
+  }
 
   const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
@@ -165,6 +170,7 @@ dashboard.get("/", (req, res) => {
     closed_this_week: closedThisWeek,
     trends,
     rag_breakdown: ragBreakdown,
+    rag_ap: ragAp,
     overdue_tasks: overdue.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, due_date: t.due_date, project_code: t.project_code, mcp_name: t.mcp_name })),
     blocked_tasks: blocked.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, project_code: t.project_code, mcp_name: t.mcp_name })),
     my_open_tasks: myOpen.map((t) => ({ id: t.id, project_id: t.project_id, name: t.name, due_date: t.due_date, project_code: t.project_code, mcp_name: t.mcp_name })),

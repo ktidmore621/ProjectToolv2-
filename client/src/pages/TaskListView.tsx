@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api, Project, Task } from "../api";
 import { ActivityDrawer } from "../components/ActivityDrawer";
 import { renderTaskField, useLayout } from "../components/fields";
-import { Card, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
+import { Card, EmptyState, inputCls, Mono, Pager, Skeleton } from "../components/ui";
 import { defaultAssigneeOf, useConfig, useSession } from "../state";
 
 /**
@@ -16,9 +16,11 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const [params, setParams] = useSearchParams();
   const { users, currentUser } = useSession();
   const { activeValues, archivedValues } = useConfig();
-  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [data, setData] = useState<{ rows: Task[]; total: number; page: number; page_size: number } | null>(null);
+  const [page, setPage] = useState(1);
   const [projects, setProjects] = useState<Project[]>([]);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  const tasks = data?.rows ?? null;
   // E9: this view honors the configurable task_list layout (custom fields included);
   // a fixed Project column is inserted after the task name since rows span projects.
   const layoutColumns = useLayout("task_list");
@@ -71,10 +73,12 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
     return qs.toString();
   }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Changing filters snaps back to page 1 (E11)
+  useEffect(() => { setPage(1); }, [query]);
   useEffect(() => {
-    setTasks(null);
-    api.get<Task[]>(`/api/tasks${query ? `?${query}` : ""}`).then(setTasks);
-  }, [query]);
+    setData(null);
+    api.get(`/api/tasks?${query ? `${query}&` : ""}page=${page}`).then(setData);
+  }, [query, page]);
   useEffect(() => { api.get<Project[]>("/api/projects?scope=active").then(setProjects); }, []);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -114,7 +118,7 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
             </optgroup>
           )}
         </select>
-        {tasks && <span className="ml-auto text-xs text-muted"><Mono>{tasks.length}</Mono> task(s)</span>}
+        {data && <span className="ml-auto text-xs text-muted"><Mono>{data.total}</Mono> task(s)</span>}
       </div>
 
       {!tasks ? (
@@ -165,9 +169,10 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
           </table>
         </Card>
       )}
+      {data && <Pager page={data.page} pageSize={data.page_size} total={data.total} onPage={setPage} />}
       {drawerTask && (
         <ActivityDrawer taskId={drawerTask.id} taskName={drawerTask.name} onClose={() => setDrawerTask(null)}
-          onChanged={() => api.get<Task[]>(`/api/tasks${query ? `?${query}` : ""}`).then(setTasks)} />
+          onChanged={() => api.get(`/api/tasks?${query ? `${query}&` : ""}page=${page}`).then(setData)} />
       )}
     </>
   );

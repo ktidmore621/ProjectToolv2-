@@ -1,36 +1,40 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, fmtCurrency, Project, todayIso } from "../api";
 import { CustomFieldInputs, renderProjectField, useCustomFields, useLayout } from "../components/fields";
-import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Skeleton } from "../components/ui";
+import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Pager, Skeleton } from "../components/ui";
 import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
-/** Active-projects table — the default view state inside Projects (v2 §1). */
+/**
+ * Active-projects table — the default view state inside Projects (v2 §1).
+ * E11: filtering, sorting and pagination are server-side, so they apply to
+ * the full result set rather than the current page.
+ */
 export function ProjectListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const { users } = useSession();
-  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [data, setData] = useState<{ rows: Project[]; total: number; page: number; page_size: number } | null>(null);
   const [q, setQ] = useState("");
   // Quick filter: defaults from the current user's Working As settings
   const [assignee, setAssignee] = useDefaultAssignee();
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "project_code", dir: 1 });
+  const [page, setPage] = useState(1);
   const [showNew, setShowNew] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const columns = useLayout("project_list");
-  const load = useCallback(() => { api.get<Project[]>("/api/projects?scope=active").then(setProjects); }, []);
-  useEffect(load, [load]);
 
-  const filtered = useMemo(() => {
-    let out = projects ?? [];
-    if (assignee) out = out.filter((p) => String(p.assignee_id) === assignee);
-    if (q.trim()) {
-      const s = q.toLowerCase();
-      out = out.filter((p) => [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name, p.status_label].some((f) => f?.toLowerCase().includes(s)));
-    }
-    return [...out].sort((a: any, b: any) => {
-      const av = a[sort.key] ?? "", bv = b[sort.key] ?? "";
-      return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
-    });
-  }, [projects, q, assignee, sort]);
+  const load = useCallback(() => {
+    const qs = new URLSearchParams({ scope: "active", page: String(page) });
+    if (q.trim()) qs.set("q", q.trim());
+    if (assignee) qs.set("assignee_id", assignee);
+    qs.set("sort", sort.key);
+    qs.set("dir", sort.dir === 1 ? "asc" : "desc");
+    api.get(`/api/projects?${qs}`).then(setData);
+  }, [q, assignee, sort, page]);
+  useEffect(load, [load]);
+  // Changing any filter/sort snaps back to page 1
+  useEffect(() => { setPage(1); }, [q, assignee, sort]);
+
+  const filtered = data?.rows ?? null;
 
   return (
     <>
@@ -48,7 +52,7 @@ export function ProjectListView({ toolbar }: { toolbar?: React.ReactNode }) {
           <Btn kind="primary" onClick={() => setShowNew(true)}>New project</Btn>
         </div>
       </div>
-      {!projects ? (
+      {!filtered ? (
         <Skeleton className="h-96" />
       ) : filtered.length === 0 ? (
         <EmptyState title="No active projects match" hint="Create a project or adjust your search." />
@@ -85,6 +89,7 @@ export function ProjectListView({ toolbar }: { toolbar?: React.ReactNode }) {
           </table>
         </Card>
       )}
+      {data && <Pager page={data.page} pageSize={data.page_size} total={data.total} onPage={setPage} />}
       {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreated={load} />}
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImported={load} />}
     </>

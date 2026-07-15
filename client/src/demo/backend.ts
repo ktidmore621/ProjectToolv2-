@@ -339,6 +339,14 @@ const route = (method: string, pattern: string, h: Handler) => {
   routes.push([method, re, h]);
 };
 
+/** E11: with ?page= the response becomes { rows, total, page, page_size } (default size 25). */
+function paginate(out: any[], q: URLSearchParams): Res | null {
+  if (q.get("page") === null) return null;
+  const size = Math.min(200, Math.max(1, Number(q.get("page_size")) || 25));
+  const page = Math.max(1, Number(q.get("page")) || 1);
+  return ok({ rows: out.slice((page - 1) * size, page * size), total: out.length, page, page_size: size });
+}
+
 export function demoRequest(method: string, url: string, body?: any): Res {
   const u = new URL(url, "http://demo");
   for (const [m, re, h] of routes) {
@@ -673,8 +681,19 @@ route("GET", "/api/projects", (_m, q) => {
   if (q.get("risk_level_id")) out = out.filter((p) => p.risk_level_id === Number(q.get("risk_level_id")));
   if (q.get("template_id")) out = out.filter((p) => p.template_id === Number(q.get("template_id")));
   const s = q.get("q")?.toLowerCase();
-  if (s) out = out.filter((p) => [p.mcp_name, p.mcp_number, p.project_code, p.assignee_name].some((f) => f?.toLowerCase().includes(s)));
-  return ok(out);
+  if (s)
+    out = out.filter((p) =>
+      [p.mcp_name, p.mcp_number, p.project_code, p.project_name, p.assignee_name, p.status_label, p.close_reason_label]
+        .some((f: any) => f?.toLowerCase().includes(s))
+    );
+  // E11: server-side sort so it covers the full result set
+  const sort = q.get("sort");
+  if (sort) {
+    const d = q.get("dir") === "desc" ? -1 : 1;
+    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    out = out.slice().sort((a, b) => { const av = keyOf(a), bv = keyOf(b); return (av < bv ? -1 : av > bv ? 1 : 0) * d; });
+  }
+  return paginate(out, q) ?? ok(out);
 });
 route("GET", "/api/projects/:id", (m) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
@@ -881,10 +900,11 @@ route("GET", "/api/tasks", (_m, q) => {
     ((a.due_date ? "0" + a.due_date : "1") + String(a.step_order).padStart(4, "0"))
       .localeCompare((b.due_date ? "0" + b.due_date : "1") + String(b.step_order).padStart(4, "0"))
   );
-  return ok(out.map((x) => {
+  const rows = out.map((x) => {
     const p = db.projects.find((pp) => pp.id === x.project_id)!;
     return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name, project_name: p.project_name ?? null };
-  }));
+  });
+  return paginate(rows, q) ?? ok(rows);
 });
 /** All activities linked to a task through the join table (v2 §6). */
 route("GET", "/api/tasks/:id/activities", (m) => {
@@ -1212,7 +1232,12 @@ route("GET", "/api/dashboard", (_m, q) => {
   const taskIsMine = (x: Row) => (x.assigned_to ? x.assigned_to === userId : mineProjectIds.has(x.project_id));
   const active = all.filter((p) => !p.is_closed);
   const ragBreakdown: Record<string, number> = { red: 0, amber: 0, green: 0 };
-  for (const p of active) ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+  // E10: total Annualized Premium alongside the count for each RAG state
+  const ragAp: Record<string, number> = { red: 0, amber: 0, green: 0 };
+  for (const p of active) {
+    ragBreakdown[p.rag] = (ragBreakdown[p.rag] ?? 0) + 1;
+    ragAp[p.rag] = (ragAp[p.rag] ?? 0) + (p.annualized_premium ?? 0);
+  }
 
   const done = doneStatusIds();
   const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
@@ -1318,6 +1343,7 @@ route("GET", "/api/dashboard", (_m, q) => {
     closed_this_week: closedThisWeek,
     trends,
     rag_breakdown: ragBreakdown,
+    rag_ap: ragAp,
     overdue_tasks: overdue.map(pick),
     blocked_tasks: blocked.map(pick),
     my_open_tasks: myOpen.map(pick),
