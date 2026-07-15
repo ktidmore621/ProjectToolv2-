@@ -126,6 +126,8 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
                   </td>
                   <td className="px-3 py-2">
                     <Link to={`/projects/${t.project_id}`} className="hover:underline">{t.mcp_name}</Link>
+                    {/* E3: Project Name renders immediately after MCP Name */}
+                    {t.project_name && <span className="ml-1.5 text-xs text-muted">{t.project_name}</span>}
                     <span className="ml-1.5 text-xs text-muted"><Mono>{t.project_code}</Mono></span>
                   </td>
                   <td className="px-3 py-2"><Chip label={t.status_label} color={t.status_color} small /></td>

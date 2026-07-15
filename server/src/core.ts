@@ -292,7 +292,18 @@ export function generateTasksFromTemplate(projectId: number, templateId: number,
  * 'skipped'), so projects with historically skipped tasks are not
  * retroactively invalidated. Skipped can no longer be newly assigned.
  */
-export function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null }): string[] {
+export function closureProblems(
+  projectId: number,
+  body: { final_summary?: string | null; close_reason_id?: number | null },
+  opts: { cancelled?: boolean } = {}
+): string[] {
+  // E5: cancellation follows the same closure processing but different inputs —
+  // Close Reason is required, Final Summary is optional (a cancelled project
+  // often has no outcome to summarize), and incomplete required tasks don't
+  // block: cancellation is precisely how abandoned work gets recorded.
+  if (opts.cancelled) {
+    return body.close_reason_id ? [] : ["Close Reason is required to cancel a project"];
+  }
   const problems: string[] = [];
   const doneIds = valuesFor("Task Status")
     .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
@@ -409,6 +420,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     project_code: p.project_code,
     mcp_number: p.mcp_number,
     mcp_name: p.mcp_name,
+    project_name: p.project_name ?? null,
     assignee_id: p.assignee_id,
     assignee_name: assignee?.name ?? "—",
     annualized_premium: p.annualized_premium,

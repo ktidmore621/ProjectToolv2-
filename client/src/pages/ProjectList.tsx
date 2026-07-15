@@ -99,7 +99,7 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
   const [templates, setTemplates] = useState<any[]>([]);
   const customFields = useCustomFields();
   const [form, setForm] = useState({
-    mcp_number: "", mcp_name: "", assignee_id: currentUser?.id ?? 0, annualized_premium: "",
+    mcp_number: "", mcp_name: "", project_name: "", assignee_id: currentUser?.id ?? 0, annualized_premium: "",
     assignment_date: todayIso(), target_date: "", risk_level_id: "", template_id: 0,
   });
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -123,6 +123,7 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
     try {
       const p = await api.post<Project>("/api/projects", {
         ...form,
+        project_name: form.project_name || null,
         assignee_id: Number(form.assignee_id),
         annualized_premium: form.annualized_premium === "" ? undefined : Number(form.annualized_premium),
         template_id: Number(form.template_id),
@@ -144,6 +145,9 @@ export function NewProjectModal({ onClose, onCreated }: { onClose: () => void; o
       <form onSubmit={submit} className="grid grid-cols-2 gap-4">
         <Field label="MCP #"><input className={inputCls} required value={form.mcp_number} onChange={(e) => setForm({ ...form, mcp_number: e.target.value })} placeholder="e.g. MCP-1234" /></Field>
         <Field label="MCP Name"><input className={inputCls} required value={form.mcp_name} onChange={(e) => setForm({ ...form, mcp_name: e.target.value })} placeholder="Customer name" /></Field>
+        <Field label="Project Name (optional)" hint="Free text — shown right after MCP Name on lists, boards and the project record.">
+          <input className={inputCls} value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} placeholder="e.g. 2026 Billing Recovery" />
+        </Field>
         <Field label="Assignee">
           <select className={inputCls} required value={form.assignee_id} onChange={(e) => setForm({ ...form, assignee_id: Number(e.target.value) })}>
             <option value={0} disabled>Select…</option>

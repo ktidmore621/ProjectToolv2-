@@ -149,22 +149,22 @@ export function seed(opts: { demo?: boolean } = {}) {
 
   const insTT = db.prepare(
     `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset,
-       default_priority_id, can_edit, can_skip)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       default_priority_id, can_edit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const tts: [string, string, number, number, number, number, number][] = [
-    // name, description, required, due_offset, priority, can_skip, can_edit
-    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0, 1],
-    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0, 1],
-    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1, 1],
-    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1, 1],
-    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0, 1],
-    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0, 1],
-    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0, 1],
-    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0, 1],
+  const tts: [string, string, number, number, number, number][] = [
+    // name, description, required, due_offset, priority, can_edit
+    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 1],
+    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 1],
+    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1],
+    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1],
+    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 1],
+    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 1],
+    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 1],
+    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 1],
   ];
-  tts.forEach(([name, desc, req, offset, prioId, canSkip, canEdit], i) =>
-    insTT.run(tplId, i + 1, name, desc, req, offset, prioId, canEdit, canSkip)
+  tts.forEach(([name, desc, req, offset, prioId, canEdit], i) =>
+    insTT.run(tplId, i + 1, name, desc, req, offset, prioId, canEdit)
   );
 
   // ---- Field requirement rules (§5.3) ----
@@ -176,6 +176,7 @@ export function seed(opts: { demo?: boolean } = {}) {
   insFR.run("project", "project_code", "Project ID", 1, 1, "always");
   insFR.run("project", "mcp_number", "MCP #", 1, 1, "always");
   insFR.run("project", "mcp_name", "MCP Name", 1, 1, "always");
+  insFR.run("project", "project_name", "Project Name", 0, 0, "creation"); // E3: optional at creation
   insFR.run("project", "assignee_id", "Assignee", 1, 1, "always");
   insFR.run("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   insFR.run("project", "assignment_date", "Assignment Date", 1, 1, "always");
@@ -196,6 +197,7 @@ export function seed(opts: { demo?: boolean } = {}) {
   const layouts: Record<string, [string, string, number, number][]> = {
     portfolio_card: [
       ["mcp_name", "MCP Name", 1, 1],
+      ["project_name", "Project Name", 1, 0],
       ["rag", "RAG", 1, 1],
       ["project_code", "Project ID", 1, 0],
       ["assignee_name", "Assignee", 1, 0],
@@ -217,6 +219,7 @@ export function seed(opts: { demo?: boolean } = {}) {
       ["project_code", "Project ID", 1, 1],
       ["mcp_number", "MCP #", 1, 0],
       ["mcp_name", "MCP Name", 1, 1],
+      ["project_name", "Project Name", 1, 0],
       ["assignee_name", "Assignee", 1, 0],
       ["annualized_premium", "AP", 1, 0],
       ["status_label", "Status", 1, 1],
@@ -239,6 +242,7 @@ export function seed(opts: { demo?: boolean } = {}) {
     ],
     project_header: [
       ["mcp_name", "MCP Name", 1, 1],
+      ["project_name", "Project Name", 1, 0],
       ["mcp_number", "MCP #", 1, 1],
       ["project_code", "Project ID", 1, 1],
       ["status_label", "Status", 1, 1],

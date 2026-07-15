@@ -39,6 +39,39 @@ wins.post("/", (req, res) => {
 });
 
 /**
+ * E8: in-place, author-only edit — same pattern as editing a note/activity
+ * (a correction keeps the same ID, it is not a new entry). Audited.
+ */
+wins.patch("/:id", (req, res) => {
+  const w = db.prepare("SELECT * FROM wins WHERE id = ?").get(req.params.id) as any;
+  if (!w) return res.status(404).json({ error: "Win not found" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(w.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
+  const editorId = Number(req.body.user_id);
+  if (!editorId || !w.logged_by || editorId !== w.logged_by)
+    return res.status(403).json({ error: "Only the author of a win can edit it" });
+
+  const next = {
+    description: "description" in req.body ? String(req.body.description ?? "").trim() : w.description,
+    category_id: "category_id" in req.body ? req.body.category_id ?? null : w.category_id,
+    occurred_date: "occurred_date" in req.body ? req.body.occurred_date : w.occurred_date,
+  };
+  if (!next.description) return res.status(400).json({ error: "Description is required" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.occurred_date ?? ""))
+    return res.status(400).json({ error: "Occurred date must be YYYY-MM-DD" });
+
+  db.prepare("UPDATE wins SET description = ?, category_id = ?, occurred_date = ? WHERE id = ?")
+    .run(next.description, next.category_id, next.occurred_date, w.id);
+  logActivity({
+    project_id: w.project_id, user_id: editorId, kind: "system",
+    note: next.description !== w.description
+      ? `edited a win: "${w.description}" → "${next.description}"`
+      : `edited a win: "${next.description}"`,
+  });
+  res.json(serializeWin(db.prepare("SELECT * FROM wins WHERE id = ?").get(w.id)));
+});
+
+/**
  * B4: wins feed leadership reporting, so deletion is author-only and audited.
  * The acting user comes from ?user_id= (DELETE bodies aren't reliable).
  */

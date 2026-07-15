@@ -294,11 +294,11 @@ config.post("/templates", (req, res) => {
   if (clone_from) {
     const src = db.prepare("SELECT * FROM template_tasks WHERE template_id = ? ORDER BY step_order").all(clone_from) as any[];
     const ins = db.prepare(
-      `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset, default_priority_id, can_edit, can_skip)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset, default_priority_id, can_edit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const t of src)
-      ins.run(id, t.step_order, t.name, t.description, t.required, t.due_offset, t.default_priority_id, t.can_edit, t.can_skip);
+      ins.run(id, t.step_order, t.name, t.description, t.required, t.due_offset, t.default_priority_id, t.can_edit);
   }
   res.status(201).json(db.prepare("SELECT * FROM workflow_templates WHERE id = ?").get(id));
 });
@@ -320,14 +320,14 @@ config.patch("/templates/:id", (req, res) => {
 config.post("/templates/:id/tasks", (req, res) => {
   const tpl = db.prepare("SELECT * FROM workflow_templates WHERE id = ?").get(req.params.id) as any;
   if (!tpl) return res.status(404).json({ error: "Template not found" });
-  const { name, description, required, due_offset, default_priority_id, can_edit, can_skip } = req.body;
+  const { name, description, required, due_offset, default_priority_id, can_edit } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: "Task name is required" });
   const max = db.prepare("SELECT MAX(step_order) AS m FROM template_tasks WHERE template_id = ?").get(tpl.id) as any;
   const id = db.prepare(
-    `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset, default_priority_id, can_edit, can_skip)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO template_tasks (template_id, step_order, name, description, required, due_offset, default_priority_id, can_edit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(tpl.id, (max.m ?? 0) + 1, name.trim(), description ?? "", required ? 1 : 0, due_offset ?? 7,
-    default_priority_id ?? null, can_edit === false ? 0 : 1, can_skip ? 1 : 0
+    default_priority_id ?? null, can_edit === false ? 0 : 1
   ).lastInsertRowid;
   res.status(201).json(db.prepare("SELECT * FROM template_tasks WHERE id = ?").get(id));
 });
@@ -335,7 +335,8 @@ config.post("/templates/:id/tasks", (req, res) => {
 config.patch("/template-tasks/:id", (req, res) => {
   const t = db.prepare("SELECT * FROM template_tasks WHERE id = ?").get(req.params.id) as any;
   if (!t) return res.status(404).json({ error: "Template task not found" });
-  const fields = ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "can_skip", "step_order"];
+  // E7: can_skip removed — it was never consumed by backend processing
+  const fields = ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "step_order"];
   const sets: string[] = []; const vals: any[] = [];
   for (const f of fields) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
   if (sets.length) db.prepare(`UPDATE template_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals, t.id);

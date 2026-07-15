@@ -78,6 +78,21 @@ function load(): DemoDB | null {
       for (const w of loaded.wins) w.activity_id ??= null;
       // E4: Skipped is retired — archived, never assignable again
       for (const v of loaded.picklist_values) if (v.maps_to === "skipped") v.archived = 1;
+      // E3: Project Name — column + layout slot right after MCP Name + field requirement
+      for (const pr of loaded.projects) pr.project_name ??= null;
+      for (const view of ["project_list", "portfolio_card", "project_header"]) {
+        if (loaded.view_layout_fields.some((f) => f.view_name === view && f.field_key === "project_name")) continue;
+        const mcp = loaded.view_layout_fields.find((f) => f.view_name === view && f.field_key === "mcp_name");
+        if (!mcp) continue;
+        for (const f of loaded.view_layout_fields)
+          if (f.view_name === view && f.display_order > mcp.display_order) f.display_order += 1;
+        loaded.view_layout_fields.push({
+          id: ++loaded.seq, view_name: view, field_key: "project_name", label: "Project Name",
+          display_order: mcp.display_order + 1, is_visible: 1, is_locked: 0,
+        });
+      }
+      if (!loaded.field_requirements.some((r) => r.object_type === "project" && r.field_name === "project_name"))
+        loaded.field_requirements.push({ id: ++loaded.seq, object_type: "project", field_name: "project_name", label: "Project Name", is_system: 0, required: 0, required_at: "creation" });
       if (!loaded.users.some((u) => u.name === "Leader" || u.email === "leader@example.com"))
         loaded.users.push({
           id: ++loaded.seq, name: "Leader", email: "leader@example.com", is_active: 1,
@@ -270,20 +285,21 @@ function freshDb(): void {
     is_default: 1, is_active: 1, created_by: users[0], created_date: now(),
   });
 
-  const tts: [string, string, number, number, number, number][] = [
-    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high"), 0],
-    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high"), 0],
-    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high"), 1],
-    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium"), 1],
-    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium"), 0],
-    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium"), 0],
-    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium"), 0],
-    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium"), 0],
+  // E7: can_skip removed — it was never consumed by backend processing
+  const tts: [string, string, number, number, number][] = [
+    ["Review customer billing history", "Pull and review the MCP's billing history for anomalies and trends.", 1, 5, prio("high")],
+    ["Complete billing analysis", "Full billing analysis with documented findings.", 1, 10, prio("high")],
+    ["Schedule / complete customer visit", "Arrange and complete the on-site or remote customer visit.", 1, 14, prio("high")],
+    ["Identify billing concerns", "Document specific billing concerns discovered in analysis/visit.", 1, 16, prio("medium")],
+    ["Create action plan tasks", "Define the concrete action plan steps with the customer.", 1, 21, prio("medium")],
+    ["Complete action plan follow-up", "Work the plan and confirm outcomes with the customer.", 1, 28, prio("medium")],
+    ["Final review", "Confirm the customer is in a better billing position; verify all work is documented.", 1, 30, prio("medium")],
+    ["Close project", "Enter final summary, select close reason, and close.", 1, 30, prio("medium")],
   ];
-  tts.forEach(([name, desc, required, due_offset, priorityId, can_skip], i) =>
+  tts.forEach(([name, desc, required, due_offset, priorityId], i) =>
     db.template_tasks.push({
       id: nextId(), template_id: tplId, step_order: i + 1, name, description: desc,
-      required, due_offset, default_priority_id: priorityId, can_edit: 1, can_skip,
+      required, due_offset, default_priority_id: priorityId, can_edit: 1,
     })
   );
 
@@ -292,6 +308,7 @@ function freshDb(): void {
   fr("project", "project_code", "Project ID", 1, 1, "always");
   fr("project", "mcp_number", "MCP #", 1, 1, "always");
   fr("project", "mcp_name", "MCP Name", 1, 1, "always");
+  fr("project", "project_name", "Project Name", 0, 0, "creation"); // E3: optional at creation
   fr("project", "assignee_id", "Assignee", 1, 1, "always");
   fr("project", "annualized_premium", "Annualized Premium (AP)", 1, 1, "always");
   fr("project", "assignment_date", "Assignment Date", 1, 1, "always");
@@ -305,7 +322,7 @@ function freshDb(): void {
 
   const layouts: Record<string, [string, string, number, number][]> = {
     portfolio_card: [
-      ["mcp_name", "MCP Name", 1, 1], ["rag", "RAG", 1, 1], ["project_code", "Project ID", 1, 0],
+      ["mcp_name", "MCP Name", 1, 1], ["project_name", "Project Name", 1, 0], ["rag", "RAG", 1, 1], ["project_code", "Project ID", 1, 0],
       ["assignee_name", "Assignee", 1, 0], ["annualized_premium", "AP", 1, 0], ["days_in_status", "Days in Status", 1, 0],
       ["next_due_task", "Next Due Task", 1, 0], ["risk_label", "Risk Level", 0, 0], ["mcp_number", "MCP #", 0, 0],
     ],
@@ -315,6 +332,7 @@ function freshDb(): void {
     ],
     project_list: [
       ["project_code", "Project ID", 1, 1], ["mcp_number", "MCP #", 1, 0], ["mcp_name", "MCP Name", 1, 1],
+      ["project_name", "Project Name", 1, 0],
       ["assignee_name", "Assignee", 1, 0], ["annualized_premium", "AP", 1, 0], ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 0],
       ["risk_label", "Risk", 1, 0], ["assignment_date", "Assigned", 1, 0],
       ["days_in_status", "Days in Status", 0, 0], ["open_task_count", "Open Tasks", 1, 0],
@@ -326,7 +344,7 @@ function freshDb(): void {
       ["activity_count", "Activities", 1, 0], ["task_type", "Type", 0, 0],
     ],
     project_header: [
-      ["mcp_name", "MCP Name", 1, 1], ["mcp_number", "MCP #", 1, 1], ["project_code", "Project ID", 1, 1],
+      ["mcp_name", "MCP Name", 1, 1], ["project_name", "Project Name", 1, 0], ["mcp_number", "MCP #", 1, 1], ["project_code", "Project ID", 1, 1],
       ["status_label", "Status", 1, 1], ["rag", "RAG", 1, 1], ["assignee_name", "Assignee", 1, 0],
       ["annualized_premium", "AP", 1, 0], ["assignment_date", "Assignment Date", 1, 0], ["target_date", "Estimated Completion Date", 1, 0],
       ["risk_label", "Risk Level", 1, 0],
@@ -383,7 +401,7 @@ function seedDemoProjects(users: number[], tplId: number) {
     const isClosed = !!d.closed;
     const pid = nextId();
     db.projects.push({
-      id: pid, project_code: code, mcp_number: d.mcp[0], mcp_name: d.mcp[1],
+      id: pid, project_code: code, mcp_number: d.mcp[0], mcp_name: d.mcp[1], project_name: null,
       assignee_id: d.assignee, annualized_premium: d.ap, assignment_date: assigned, target_date: null,
       template_id: tplId, status_id: status(d.status), risk_level_id: risk(d.risk),
       rag_override: null, rag_override_reason: null,

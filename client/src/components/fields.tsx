@@ -20,6 +20,7 @@ export function renderProjectField(key: string, p: Project): React.ReactNode {
   if (key.startsWith("cf_")) return renderCustomValue(p.custom?.[key]);
   switch (key) {
     case "mcp_name": return <span className="font-medium">{p.mcp_name}</span>;
+    case "project_name": return p.project_name ? <span>{p.project_name}</span> : <span className="text-muted">—</span>;
     case "mcp_number": return <Mono className="text-muted">{p.mcp_number}</Mono>;
     case "project_code": return <Mono className="text-muted">{p.project_code}</Mono>;
     case "assignee_name": return <span>{p.assignee_name}</span>;

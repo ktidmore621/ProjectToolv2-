@@ -259,6 +259,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
 
   return {
     id: p.id, project_code: p.project_code, mcp_number: p.mcp_number, mcp_name: p.mcp_name,
+    project_name: p.project_name ?? null,
     assignee_id: p.assignee_id, assignee_name: userName(p.assignee_id) ?? "—",
     annualized_premium: p.annualized_premium ?? null,
     assignment_date: p.assignment_date, target_date: p.target_date, template_id: p.template_id,
@@ -280,7 +281,10 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
   };
 }
 
-function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null; [k: string]: any }): string[] {
+function closureProblems(projectId: number, body: { final_summary?: string | null; close_reason_id?: number | null; [k: string]: any }, opts: { cancelled?: boolean } = {}): string[] {
+  // E5: cancellation requires a Close Reason; Final Summary is optional and
+  // incomplete required tasks don't block (abandoned work is the point).
+  if (opts.cancelled) return body.close_reason_id ? [] : ["Close Reason is required to cancel a project"];
   const problems: string[] = [];
   const done = doneStatusIds();
   for (const t of db.project_tasks)
@@ -560,7 +564,7 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
     id: nextId(), template_id: tpl.id, step_order: max + 1, name: b.name.trim(), description: b.description ?? "",
     required: b.required ? 1 : 0, due_offset: b.due_offset ?? 7,
     default_priority_id: b.default_priority_id ?? null,
-    can_edit: b.can_edit === false || b.can_edit === 0 ? 0 : 1, can_skip: b.can_skip ? 1 : 0,
+    can_edit: b.can_edit === false || b.can_edit === 0 ? 0 : 1,
   };
   db.template_tasks.push(t);
   return ok(t, 201);
@@ -568,7 +572,7 @@ route("POST", "/api/templates/:id/tasks", (m, _q, b) => {
 route("PATCH", "/api/template-tasks/:id", (m, _q, b) => {
   const t = db.template_tasks.find((x) => x.id === Number(m.id));
   if (!t) return err(404, "Template task not found");
-  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "can_skip", "step_order"])
+  for (const f of ["name", "description", "required", "due_offset", "default_priority_id", "can_edit", "step_order"])
     if (f in b) t[f] = b[f];
   return ok(t);
 });
@@ -677,6 +681,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const code = nextProjectCode();
   const p: Row = {
     id: nextId(), project_code: code, mcp_number: b.mcp_number, mcp_name: b.mcp_name,
+    project_name: (typeof b.project_name === "string" && b.project_name.trim()) || null,
     assignee_id: b.assignee_id, annualized_premium: ap, assignment_date: b.assignment_date, target_date: b.target_date ?? null,
     template_id: b.template_id, status_id: valueByMapsTo("Project Status", "new")!.id,
     risk_level_id: b.risk_level_id ?? null, rag_override: null, rag_override_reason: null,
@@ -703,7 +708,7 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
 
   const oldAssignee = p.assignee_id;
   const oldAp = p.annualized_premium ?? null;
-  for (const f of ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
+  for (const f of ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
   if (custom) saveCustomValues(p.id, custom.parsed);
 
   if ("annualized_premium" in b && b.annualized_premium !== oldAp) {
@@ -745,6 +750,9 @@ route("POST", "/api/projects/:id/status", (m, _q, b) => {
     if (problems.length) return err(422, "Closure requirements not met", { problems, needs_close_form: true });
     return err(422, "Use the Close Project form", { needs_close_form: true, problems: [] });
   }
+  // E5: Cancelled is a closure status — same workflow as closing
+  if (target.maps_to === "cancelled")
+    return err(422, "Use the Cancel Project form", { needs_close_form: true, cancelled: true, problems: [] });
   const old = valueById(p.status_id);
   p.status_id = b.status_id;
   p.status_changed_date = now();
@@ -759,11 +767,11 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "Project is already closed");
-  const problems = closureProblems(p.id, b);
+  const problems = closureProblems(p.id, b, { cancelled: !!b.cancelled });
   if (problems.length && !b.override) return err(422, "Closure requirements not met", { problems });
   if (problems.length && b.override && !b.override_reason?.trim())
     return err(422, "An override reason is required", { problems });
-  const closed = valueByMapsTo("Project Status", "closed")!;
+  const closed = valueByMapsTo("Project Status", b.cancelled ? "cancelled" : "closed")!;
   const old = valueById(p.status_id);
   // B2: clear any manual RAG override at closure so history reports Closed = Green
   if (p.rag_override) {
@@ -782,7 +790,7 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
   p.final_summary = b.final_summary ?? null;
   logActivity({
     project_id: p.id, user_id: b.user_id, kind: "status_change",
-    note: b.override ? `closed project with override: ${b.override_reason}` : "closed project",
+    note: b.override ? `${b.cancelled ? "cancelled" : "closed"} project with override: ${b.override_reason}` : `${b.cancelled ? "cancelled" : "closed"} project`,
     old_status: old?.label, new_status: closed.label,
   });
   return ok(serializeProject(p));
@@ -853,7 +861,7 @@ route("GET", "/api/tasks", (_m, q) => {
   );
   return ok(out.map((x) => {
     const p = db.projects.find((pp) => pp.id === x.project_id)!;
-    return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name };
+    return { ...serializeTask(x), project_code: p.project_code, mcp_name: p.mcp_name, project_name: p.project_name ?? null };
   }));
 });
 /** All activities linked to a task through the join table (v2 §6). */
@@ -1111,6 +1119,33 @@ route("POST", "/api/wins", (_m, _q, b) => {
   w.activity_id = note.id;
   return ok(serializeWin(w), 201);
 });
+/** E8: in-place, author-only win editing (same pattern as note/activity edits). Audited. */
+route("PATCH", "/api/wins/:id", (m, _q, b) => {
+  const w = db.wins.find((x) => x.id === Number(m.id));
+  if (!w) return err(404, "Win not found");
+  const p = db.projects.find((x) => x.id === w.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
+  const editorId = Number(b.user_id);
+  if (!editorId || !w.logged_by || editorId !== w.logged_by) return err(403, "Only the author of a win can edit it");
+  const next = {
+    description: "description" in b ? String(b.description ?? "").trim() : w.description,
+    category_id: "category_id" in b ? b.category_id ?? null : w.category_id,
+    occurred_date: "occurred_date" in b ? b.occurred_date : w.occurred_date,
+  };
+  if (!next.description) return err(400, "Description is required");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.occurred_date ?? "")) return err(400, "Occurred date must be YYYY-MM-DD");
+  logActivity({
+    project_id: w.project_id, user_id: editorId, kind: "system",
+    note: next.description !== w.description
+      ? `edited a win: "${w.description}" \u2192 "${next.description}"`
+      : `edited a win: "${next.description}"`,
+  });
+  w.description = next.description;
+  w.category_id = next.category_id;
+  w.occurred_date = next.occurred_date;
+  return ok(serializeWin(w));
+});
+
 /** B4: author-only, audited deletion; the creation system note is cleaned up too. */
 route("DELETE", "/api/wins/:id", (m, q, b) => {
   const w = db.wins.find((x) => x.id === Number(m.id));
@@ -1301,6 +1336,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
   const col = (names: string[]) => header.findIndex((h) => names.includes(h));
   const iMcp = col(["mcp_number", "mcp_", "mcp"]);
   const iName = col(["mcp_name", "customer", "customer_name"]);
+  const iProjectName = col(["project_name"]); // E3: optional
   const iAssignee = col(["assignee", "assignee_name", "assigned_to"]);
   const iAp = col(["ap", "annualized_premium", "annualized_premium_ap", "annual_premium"]);
   const iDate = col(["assignment_date", "assigned", "date"]);
@@ -1320,6 +1356,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       line: idx + 2,
       mcp_number: (r[iMcp] ?? "").trim(),
       mcp_name: (r[iName] ?? "").trim(),
+      project_name: iProjectName >= 0 ? (r[iProjectName] ?? "").trim() : "",
       assignee: iAssignee >= 0 ? (r[iAssignee] ?? "").trim() : "",
       annualized_premium: null as number | null,
       assignment_date: iDate >= 0 ? (r[iDate] ?? "").trim() : "",
@@ -1383,6 +1420,7 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
     const pid = nextId();
     db.projects.push({
       id: pid, project_code: code, mcp_number: r.mcp_number, mcp_name: r.mcp_name,
+      project_name: r.project_name || null,
       assignee_id: r.assignee_id, annualized_premium: r.annualized_premium, assignment_date: r.assignment_date, target_date: null,
       template_id: r.template_id, status_id: statusNew.id, risk_level_id: null,
       rag_override: null, rag_override_reason: null,
@@ -1424,9 +1462,9 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     return {
       filename: "projects.csv",
       csv: toCsv(
-        ["Project ID", "MCP #", "MCP Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
+        ["Project ID", "MCP #", "MCP Name", "Project Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
         projects.map((p) => [
-          p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
+          p.project_code, p.mcp_number, p.mcp_name, p.project_name ?? "", p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
           p.status_label, p.rag.toUpperCase(), p.risk_label ?? "", p.open_task_count, p.created_date, p.closed_date ?? "", p.close_reason_label ?? "",
           ...customFields.map((f) => customCsvValue(p.custom?.[f.field_key])),
         ])

@@ -444,13 +444,12 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
     name: task.name ?? "", description: task.description ?? "",
     required: !!(task.required ?? 1), due_offset: task.due_offset ?? 7,
     default_priority_id: task.default_priority_id ?? "", can_edit: !!(task.can_edit ?? 1),
-    can_skip: !!(task.can_skip ?? 0),
   });
   async function submit(e: FormEvent) {
     e.preventDefault();
     const payload = {
       ...form,
-      required: form.required ? 1 : 0, can_edit: form.can_edit ? 1 : 0, can_skip: form.can_skip ? 1 : 0,
+      required: form.required ? 1 : 0, can_edit: form.can_edit ? 1 : 0,
       default_priority_id: form.default_priority_id ? Number(form.default_priority_id) : null,
       due_offset: Number(form.due_offset),
     };
@@ -477,7 +476,6 @@ function TemplateTaskModal({ task, priorities, onClose, onSaved }: { task: any; 
         <div className="grid grid-cols-2 gap-2 text-sm">
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} /> Required</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_edit} onChange={(e) => setForm({ ...form, can_edit: e.target.checked })} /> User can edit name</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.can_skip} onChange={(e) => setForm({ ...form, can_skip: e.target.checked })} /> User can skip without reason</label>
         </div>
         <div className="flex justify-end gap-2"><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" type="submit">{isNew ? "Add task" : "Save"}</Btn></div>
       </form>
@@ -710,6 +708,7 @@ function CustomFields() {
 
 const SAMPLE_PROJECT: Project = {
   id: 0, project_code: "CAP-0042", mcp_number: "MCP-9876", mcp_name: "Sample Customer Co.",
+  project_name: "2026 Billing Recovery",
   assignee_id: 0, assignee_name: "Morgan Hale", annualized_premium: 12500, assignment_date: "2026-06-15", target_date: "2026-08-01",
   template_id: 0, status_id: 0, status_label: "In Progress", status_color: "#12808A", status_key: "in_progress",
   risk_level_id: 0, risk_label: "High", risk_color: "#B0632F",

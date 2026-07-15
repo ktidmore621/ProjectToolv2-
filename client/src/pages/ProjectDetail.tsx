@@ -4,7 +4,7 @@ import { Activity, api, ApiError, fmtDate, fmtHours, fmtTime, Project, Task, tod
 import { ActivityDrawer } from "../components/ActivityDrawer";
 import { canEditActivity, EditActivityButton, EditActivityModal } from "../components/EditActivityModal";
 import { CustomFieldInputs, renderProjectField, renderTaskField, useCustomFields, useLayout } from "../components/fields";
-import { ActivityTypeIcon, TrophyIcon } from "../components/icons";
+import { ActivityTypeIcon, EditIcon, TrophyIcon } from "../components/icons";
 import { Page } from "../components/Layout";
 import { TaskKanban } from "../components/TaskKanban";
 import { ConfirmDeleteTaskModal, TaskModal } from "../components/TaskModal";
@@ -27,6 +27,7 @@ export function ProjectDetail() {
   const [taskView, setTaskView] = useState<"list" | "kanban">("list");
   const [showEdit, setShowEdit] = useState(false);
   const [showClose, setShowClose] = useState(false);
+  const [showCancel, setShowCancel] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showRag, setShowRag] = useState(false);
   const [skipTask, setSkipTask] = useState<{ task: Task; statusId: number } | null>(null);
@@ -99,6 +100,8 @@ export function ProjectDetail() {
             <Btn onClick={() => setShowEdit(true)}>Edit project</Btn>
             <Btn onClick={() => setShowRag(true)}>RAG override</Btn>
             <StatusSelect project={project} onChanged={load} />
+            {/* E5: cancellation goes through the same closure workflow */}
+            <Btn kind="danger" onClick={() => setShowCancel(true)}>Cancel project</Btn>
             <Btn kind="primary" onClick={() => setShowClose(true)}>Close project</Btn>
           </>
         )
@@ -249,6 +252,7 @@ export function ProjectDetail() {
       )}
       {showEdit && <EditProjectModal project={project} onClose={() => setShowEdit(false)} onSaved={load} />}
       {showClose && <CloseModal project={project} onClose={() => setShowClose(false)} onClosed={load} />}
+      {showCancel && <CloseModal project={project} cancel onClose={() => setShowCancel(false)} onClosed={load} />}
       {showAddTask && <AddTaskModal project={project} users={users} onClose={() => setShowAddTask(false)} onAdded={load} />}
       {showRag && <RagModal project={project} onClose={() => setShowRag(false)} onSaved={load} />}
       {deleteTask && (
@@ -272,7 +276,8 @@ function StatusSelect({ project, onChanged }: { project: Project; onChanged: () 
   const { activeValues } = useConfig();
   const { currentUser } = useSession();
   const toast = useToast();
-  const options = activeValues("Project Status").filter((v) => v.maps_to !== "closed");
+  // Closing and cancelling both go through the closure workflow, not a status flip (E5)
+  const options = activeValues("Project Status").filter((v) => !["closed", "cancelled"].includes(v.maps_to ?? ""));
   return (
     <select
       aria-label="Project status"
@@ -304,6 +309,7 @@ function EditProjectModal({ project, onClose, onSaved }: { project: Project; onC
   const toast = useToast();
   const [form, setForm] = useState({
     mcp_name: project.mcp_name,
+    project_name: project.project_name ?? "",
     assignee_id: String(project.assignee_id),
     annualized_premium: project.annualized_premium != null ? String(project.annualized_premium) : "",
     target_date: project.target_date ?? "",
@@ -324,6 +330,7 @@ function EditProjectModal({ project, onClose, onSaved }: { project: Project; onC
     try {
       await api.patch(`/api/projects/${project.id}`, {
         mcp_name: form.mcp_name,
+        project_name: form.project_name.trim() || null,
         assignee_id: Number(form.assignee_id),
         annualized_premium: Number(form.annualized_premium),
         target_date: form.target_date || null,
@@ -356,6 +363,9 @@ function EditProjectModal({ project, onClose, onSaved }: { project: Project; onC
     <Modal title={`Edit ${project.project_code} — ${project.mcp_name}`} onClose={() => !confirmReassign && onClose()} wide>
       <form onSubmit={submit} className="grid grid-cols-2 gap-4">
         <Field label="MCP Name"><input className={inputCls} required value={form.mcp_name} onChange={(e) => setForm({ ...form, mcp_name: e.target.value })} /></Field>
+        <Field label="Project Name (optional)">
+          <input className={inputCls} value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} />
+        </Field>
         <Field label="Assignee">
           <select className={inputCls} required value={form.assignee_id} onChange={(e) => setForm({ ...form, assignee_id: e.target.value })}>
             {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -401,16 +411,28 @@ function EditProjectModal({ project, onClose, onSaved }: { project: Project; onC
   );
 }
 
-function CloseModal({ project, onClose, onClosed }: { project: Project; onClose: () => void; onClosed: () => void }) {
+/**
+ * Close (or, with `cancel`, cancel — E5) a project. Both paths share the same
+ * closure processing server-side: audit trail, permanent read-only state,
+ * historical treatment, and RAG-override clearing (B2). Cancellation requires
+ * a Close Reason but not a Final Summary — a cancelled project often has no
+ * outcome to summarize.
+ */
+function CloseModal({ project, cancel, onClose, onClosed }: { project: Project; cancel?: boolean; onClose: () => void; onClosed: () => void }) {
   const { activeValues } = useConfig();
   const { currentUser } = useSession();
   const toast = useToast();
   const [summary, setSummary] = useState("");
-  const [reasonId, setReasonId] = useState<number>(activeValues("Close Reason").find((v) => v.is_default)?.id ?? 0);
+  const [reasonId, setReasonId] = useState<number>(() =>
+    cancel
+      ? activeValues("Close Reason").find((v) => v.maps_to === "cancelled")?.id ?? 0
+      : activeValues("Close Reason").find((v) => v.is_default)?.id ?? 0
+  );
   const [problems, setProblems] = useState<string[]>([]);
   const [override, setOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [error, setError] = useState("");
+  const verb = cancel ? "Cancel" : "Close";
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -422,30 +444,32 @@ function CloseModal({ project, onClose, onClosed }: { project: Project; onClose:
         close_reason_id: reasonId || undefined,
         override: override || undefined,
         override_reason: override ? overrideReason : undefined,
+        cancelled: cancel || undefined,
       });
-      toast(`${project.mcp_name} closed. It's now a permanent historical record.`, "success");
+      toast(`${project.mcp_name} ${cancel ? "cancelled" : "closed"}. It's now a permanent historical record.`, "success");
       onClosed(); onClose();
     } catch (err) {
       if (err instanceof ApiError && err.body?.problems) {
         setProblems(err.body.problems);
         setError(err.body.problems.length ? "" : err.message);
         if (!err.body.problems.length) setError(err.message);
-      } else setError(err instanceof Error ? err.message : "Close failed");
+      } else setError(err instanceof Error ? err.message : `${verb} failed`);
     }
   }
 
   return (
-    <Modal title={`Close ${project.project_code} — ${project.mcp_name}`} onClose={onClose}>
+    <Modal title={`${verb} ${project.project_code} — ${project.mcp_name}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
         <p className="text-xs text-muted">
-          Closing is permanent — closed projects are never reopened (§2.2). All required tasks must be Complete
-          (or deleted if they'll never be done; tasks skipped before Skipped was retired still count).
+          {cancel
+            ? "Cancelling is permanent — like closing, the project becomes a read-only historical record and is never reopened. A close reason is required; a final summary is optional."
+            : "Closing is permanent — closed projects are never reopened (§2.2). All required tasks must be Complete (or deleted if they'll never be done; tasks skipped before Skipped was retired still count)."}
         </p>
-        <Field label="Final summary">
+        <Field label={cancel ? "Final summary (optional)" : "Final summary"}>
           <textarea className={inputCls + " h-24"} value={summary} onChange={(e) => setSummary(e.target.value)}
-            placeholder="Where did this engagement leave the customer's billing position?" />
+            placeholder={cancel ? "Anything worth recording about why this ended early" : "Where did this engagement leave the customer's billing position?"} />
         </Field>
-        <Field label="Close reason">
+        <Field label={cancel ? "Close reason (required)" : "Close reason"}>
           <select className={inputCls} value={reasonId} onChange={(e) => setReasonId(Number(e.target.value))}>
             <option value={0}>—</option>
             {activeValues("Close Reason").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
@@ -466,8 +490,8 @@ function CloseModal({ project, onClose, onClosed }: { project: Project; onClose:
         )}
         {error && <p className="text-sm text-rag-red">{error}</p>}
         <div className="flex justify-end gap-2">
-          <Btn onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" type="submit">Close project</Btn>
+          <Btn onClick={onClose}>Back</Btn>
+          <Btn kind="primary" type="submit">{verb} project</Btn>
         </div>
       </form>
     </Modal>
@@ -937,6 +961,7 @@ function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean })
   const { currentUser } = useSession();
   const toast = useToast();
   const [wins, setWins] = useState<Win[] | null>(null);
+  const [editWin, setEditWin] = useState<Win | null>(null);
   const [form, setForm] = useState({ description: "", category_id: "", occurred_date: todayIso() });
 
   const load = useCallback(() => { api.get<Win[]>(`/api/wins?project_id=${project.id}`).then(setWins); }, [project.id]);
@@ -987,8 +1012,13 @@ function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean })
                 <span>· Logged <Mono>{fmtDate(w.logged_date)}</Mono>{w.logged_by_name && <> by {w.logged_by_name}</>}</span>
               </div>
             </div>
+            {/* E8/B4: edit and delete are author-only, enforced server-side too */}
             {!readOnly && currentUser && w.logged_by === currentUser.id && (
-              <button onClick={() => remove(w)} aria-label="Remove win" className="rounded p-1 text-muted hover:bg-canvas hover:text-rag-red">✕</button>
+              <span className="flex shrink-0 items-center gap-0.5">
+                <button onClick={() => setEditWin(w)} aria-label="Edit win" title="Edit this win"
+                  className="rounded p-1 text-muted hover:bg-canvas hover:text-ink"><EditIcon size={14} /></button>
+                <button onClick={() => remove(w)} aria-label="Remove win" className="rounded p-1 text-muted hover:bg-canvas hover:text-rag-red">✕</button>
+              </span>
             )}
           </Card>
         ))}
@@ -1019,6 +1049,69 @@ function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean })
         )}
         <WinsExportCard />
       </div>
+      {editWin && (
+        <EditWinModal win={editWin} onClose={() => setEditWin(null)} onSaved={() => { setEditWin(null); load(); }} />
+      )}
     </div>
+  );
+}
+
+/**
+ * E8: in-place, author-only win editing — same shape as EditActivityModal
+ * (same fields captured at creation, saved as a correction under the same ID,
+ * recorded in the audit trail server-side).
+ */
+function EditWinModal({ win, onClose, onSaved }: { win: Win; onClose: () => void; onSaved: () => void }) {
+  const { activeValues } = useConfig();
+  const { currentUser } = useSession();
+  const toast = useToast();
+  const [form, setForm] = useState({
+    description: win.description,
+    category_id: win.category_id ? String(win.category_id) : "",
+    occurred_date: win.occurred_date,
+  });
+  const [error, setError] = useState("");
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    try {
+      await api.patch(`/api/wins/${win.id}`, {
+        user_id: currentUser?.id,
+        description: form.description,
+        category_id: form.category_id ? Number(form.category_id) : null,
+        occurred_date: form.occurred_date,
+      });
+      toast("Win updated.", "success");
+      onSaved();
+    } catch (err) { setError(err instanceof Error ? err.message : "Update failed"); }
+  }
+
+  return (
+    <Modal title="Edit win" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <Field label="What happened?">
+          <textarea className={inputCls + " h-20"} required value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        </Field>
+        <Field label="Category">
+          <select className={inputCls} value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })}>
+            <option value="">—</option>
+            {activeValues("Win Category").filter((v) => v.is_active || String(v.id) === form.category_id).map((v) => (
+              <option key={v.id} value={v.id}>{v.label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="When it happened">
+          <input type="date" className={inputCls} required value={form.occurred_date}
+            onChange={(e) => setForm({ ...form, occurred_date: e.target.value })} />
+        </Field>
+        {error && <p className="text-sm text-rag-red">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" type="submit" disabled={!form.description.trim()}>Save changes</Btn>
+        </div>
+      </form>
+    </Modal>
   );
 }

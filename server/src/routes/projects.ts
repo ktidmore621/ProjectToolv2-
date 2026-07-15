@@ -56,6 +56,7 @@ projects.get("/:id", (req, res) => {
 const createSchema = z.object({
   mcp_number: z.string().min(1),
   mcp_name: z.string().min(1),
+  project_name: z.string().nullish(), // E3: optional at creation
   assignee_id: z.number(),
   annualized_premium: z.number({ required_error: "Annualized Premium (AP) is required", invalid_type_error: "Annualized Premium (AP) must be a dollar amount" }).nonnegative("Annualized Premium (AP) must be a dollar amount"),
   assignment_date: z.string().min(1),
@@ -93,10 +94,10 @@ projects.post("/", (req, res) => {
     const code = nextProjectCode();
     const pid = db
       .prepare(
-        `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, annualized_premium, assignment_date, target_date, template_id, status_id, risk_level_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (project_code, mcp_number, mcp_name, project_name, assignee_id, annualized_premium, assignment_date, target_date, template_id, status_id, risk_level_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(code, b.mcp_number, b.mcp_name, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
+      .run(code, b.mcp_number, b.mcp_name, b.project_name?.trim() || null, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
       .lastInsertRowid as number;
     saveCustomValues(pid, custom.parsed);
     generateTasksFromTemplate(pid, b.template_id, b.assignment_date, b.assignee_id);
@@ -122,7 +123,7 @@ projects.patch("/:id", (req, res) => {
   const custom = "custom" in req.body ? validateCustomValues(req.body.custom) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
-  const allowed = ["mcp_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
+  const allowed = ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
   const sets: string[] = [];
   const vals: any[] = [];
   for (const f of allowed) {
@@ -185,6 +186,11 @@ projects.post("/:id/status", (req, res) => {
       return res.status(422).json({ error: "Closure requirements not met", problems, needs_close_form: true });
     return res.status(422).json({ error: "Use the Close Project form", needs_close_form: true, problems: [] });
   }
+  // E5: Cancelled is a closure status — it goes through the same closure
+  // workflow (/close with cancelled:true), never a plain status flip.
+  if (target.maps_to === "cancelled") {
+    return res.status(422).json({ error: "Use the Cancel Project form", needs_close_form: true, cancelled: true, problems: [] });
+  }
 
   const old = valueById(p.status_id);
   db.prepare("UPDATE projects SET status_id = ?, status_changed_date = datetime('now') WHERE id = ?").run(status_id, p.id);
@@ -202,6 +208,8 @@ const closeSchema = z.object({
   close_reason_id: z.number().nullish(),
   override: z.boolean().nullish(),
   override_reason: z.string().nullish(),
+  /** E5: cancel instead of close — same closure processing, different inputs. */
+  cancelled: z.boolean().nullish(),
 });
 
 projects.post("/:id/close", (req, res) => {
@@ -212,13 +220,13 @@ projects.post("/:id/close", (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const b = parsed.data;
 
-  const problems = closureProblems(p.id, b);
+  const problems = closureProblems(p.id, b, { cancelled: !!b.cancelled });
   if (problems.length && !b.override)
     return res.status(422).json({ error: "Closure requirements not met", problems });
   if (problems.length && b.override && !b.override_reason?.trim())
     return res.status(422).json({ error: "An override reason is required", problems });
 
-  const closed = valueByMapsTo("Project Status", "closed")!;
+  const closed = valueByMapsTo("Project Status", b.cancelled ? "cancelled" : "closed")!;
   const old = valueById(p.status_id);
   db.prepare(
     `UPDATE projects SET status_id = ?, status_changed_date = datetime('now'), closed_date = datetime('now'),
@@ -233,11 +241,12 @@ projects.post("/:id/close", (req, res) => {
       note: `cleared manual RAG override (${String(p.rag_override).toUpperCase()}: ${p.rag_override_reason ?? "no reason recorded"}) as part of closure — closed projects report Green`,
     });
   }
+  const verb = b.cancelled ? "cancelled" : "closed";
   logActivity({
     project_id: p.id, user_id: b.user_id, kind: "status_change",
     note: b.override
-      ? `closed project with override: ${b.override_reason}`
-      : `closed project`,
+      ? `${verb} project with override: ${b.override_reason}`
+      : `${verb} project`,
     old_status: old?.label, new_status: closed.label,
   });
   res.json(serializeProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(p.id)));
@@ -302,7 +311,7 @@ tasks.get("/", (req, res) => {
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
   const today = todayCentral(); // E6: overdue is judged on the Central calendar date
 
-  let sql = `SELECT t.*, p.project_code, p.mcp_name, p.assignee_id AS project_assignee_id FROM project_tasks t
+  let sql = `SELECT t.*, p.project_code, p.mcp_name, p.project_name, p.assignee_id AS project_assignee_id FROM project_tasks t
              JOIN projects p ON p.id = t.project_id
              WHERE p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`;
   const params: any[] = [...closedStatusIds];
@@ -320,7 +329,7 @@ tasks.get("/", (req, res) => {
   }
   sql += " ORDER BY (t.due_date IS NULL), t.due_date, p.project_code, t.step_order";
   const rows = db.prepare(sql).all(...params) as any[];
-  res.json(rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name })));
+  res.json(rows.map((t) => ({ ...serializeTask(t), project_code: t.project_code, mcp_name: t.mcp_name, project_name: t.project_name })));
 });
 
 /** All activities linked to this task through the many-to-many join (v2 §6). */
@@ -406,15 +415,10 @@ tasks.post("/:id/status", (req, res) => {
     return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned. Delete the task instead.` });
   const old = valueById(t.status_id);
 
-  if (target.maps_to === "skipped") {
-    if (t.required && t.template_task_id) {
-      const tpl = db.prepare("SELECT can_skip FROM template_tasks WHERE id = ?").get(t.template_task_id) as any;
-      if (!tpl?.can_skip && !skip_reason?.trim())
-        return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
-    }
-    if (t.required && !skip_reason?.trim())
-      return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
-  }
+  // Legacy skip rule kept for completeness; unreachable while Skipped is
+  // archived (guarded above). E7 removed the never-consumed can_skip flag.
+  if (target.maps_to === "skipped" && t.required && !skip_reason?.trim())
+    return res.status(422).json({ error: "Skipping a required task needs a reason", needs_skip_reason: true });
 
   // Soft warning (§4.2): completing while an earlier required task is open
   let warning: string | null = null;

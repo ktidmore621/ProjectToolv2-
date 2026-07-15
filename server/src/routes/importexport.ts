@@ -33,9 +33,9 @@ importexport.get("/export/projects.csv", (req, res) => {
   if (scope === "closed") projects = projects.filter((p) => p.is_closed);
   const customFields = activeCustomFields();
   const csv = toCsv(
-    ["Project ID", "MCP #", "MCP Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
+    ["Project ID", "MCP #", "MCP Name", "Project Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
     projects.map((p) => [
-      p.project_code, p.mcp_number, p.mcp_name, p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
+      p.project_code, p.mcp_number, p.mcp_name, p.project_name ?? "", p.assignee_name, fmtCurrency(p.annualized_premium), p.assignment_date,
       p.status_label, p.rag.toUpperCase(), p.risk_label ?? "", p.open_task_count, p.created_date, p.closed_date ?? "", p.close_reason_label ?? "",
       ...customFields.map((f) => customCsvValue(p.custom?.[f.field_key])),
     ])
@@ -125,6 +125,7 @@ interface ImportRow {
   line: number;
   mcp_number: string;
   mcp_name: string;
+  project_name: string;
   assignee: string;
   annualized_premium: number | null;
   assignment_date: string;
@@ -144,6 +145,7 @@ function validateImport(csvText: string): { rows: ImportRow[]; headerError?: str
   const col = (names: string[]) => header.findIndex((h) => names.includes(h));
   const iMcp = col(["mcp_number", "mcp_", "mcp"]);
   const iName = col(["mcp_name", "customer", "customer_name"]);
+  const iProjectName = col(["project_name"]); // E3: optional
   const iAssignee = col(["assignee", "assignee_name", "assigned_to"]);
   const iAp = col(["ap", "annualized_premium", "annualized_premium_ap", "annual_premium"]);
   const iDate = col(["assignment_date", "assigned", "date"]);
@@ -166,6 +168,7 @@ function validateImport(csvText: string): { rows: ImportRow[]; headerError?: str
       line: idx + 2,
       mcp_number: (r[iMcp] ?? "").trim(),
       mcp_name: (r[iName] ?? "").trim(),
+      project_name: iProjectName >= 0 ? (r[iProjectName] ?? "").trim() : "",
       assignee: iAssignee >= 0 ? (r[iAssignee] ?? "").trim() : "",
       annualized_premium: null,
       assignment_date: iDate >= 0 ? (r[iDate] ?? "").trim() : "",
@@ -235,10 +238,10 @@ importexport.post("/import/projects/commit", (req, res) => {
       const code = nextProjectCode();
       const pid = db
         .prepare(
-          `INSERT INTO projects (project_code, mcp_number, mcp_name, assignee_id, annualized_premium, assignment_date, template_id, status_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO projects (project_code, mcp_number, mcp_name, project_name, assignee_id, annualized_premium, assignment_date, template_id, status_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(code, r.mcp_number, r.mcp_name, r.assignee_id, r.annualized_premium, r.assignment_date, r.template_id, statusNew.id)
+        .run(code, r.mcp_number, r.mcp_name, r.project_name || null, r.assignee_id, r.annualized_premium, r.assignment_date, r.template_id, statusNew.id)
         .lastInsertRowid as number;
       const parsed = new Map<number, string | null>();
       for (const [key, value] of Object.entries(r.custom)) {

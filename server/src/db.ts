@@ -61,8 +61,7 @@ CREATE TABLE IF NOT EXISTS template_tasks (
   required INTEGER NOT NULL DEFAULT 1,
   due_offset INTEGER NOT NULL DEFAULT 7,      -- days after assignment date
   default_priority_id INTEGER REFERENCES picklist_values(id),
-  can_edit INTEGER NOT NULL DEFAULT 1,
-  can_skip INTEGER NOT NULL DEFAULT 0
+  can_edit INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -70,6 +69,7 @@ CREATE TABLE IF NOT EXISTS projects (
   project_code TEXT NOT NULL UNIQUE,          -- auto-generated e.g. CAP-0001
   mcp_number TEXT NOT NULL,
   mcp_name TEXT NOT NULL,
+  project_name TEXT,                          -- E3: optional free-text project name
   assignee_id INTEGER NOT NULL REFERENCES users(id),
   annualized_premium REAL,                    -- Annualized Premium (AP) in dollars; required at creation
   assignment_date TEXT NOT NULL,
@@ -231,6 +231,40 @@ ensureColumn("picklist_values", "archived", "INTEGER NOT NULL DEFAULT 0");
 // B4: link a win to the system note logged at creation, so deleting the win
 // can clean up the note instead of orphaning it.
 ensureColumn("wins", "activity_id", "INTEGER REFERENCES activities(id)");
+
+// E3: Project Name — open text field, optional at creation
+ensureColumn("projects", "project_name", "TEXT");
+
+// E7: the Can Skip checkbox was never consumed by backend processing; the
+// column is dropped so no dead configuration lingers. (Nothing reads it —
+// verified before dropping: skip handling keys off task.required only.)
+{
+  const cols = db.prepare("PRAGMA table_info(template_tasks)").all() as { name: string }[];
+  if (cols.some((c) => c.name === "can_skip")) db.exec("ALTER TABLE template_tasks DROP COLUMN can_skip");
+}
+
+// E3: give existing databases the Project Name layout slot, placed
+// immediately after MCP Name on each project surface, plus its (optional)
+// field-requirement row. Fresh installs get these from seedData.ts — the
+// `mcp` guard skips views that haven't been seeded yet.
+for (const view of ["project_list", "portfolio_card", "project_header"]) {
+  const has = db.prepare("SELECT id FROM view_layout_fields WHERE view_name = ? AND field_key = 'project_name'").get(view);
+  if (has) continue;
+  const mcp = db.prepare("SELECT display_order FROM view_layout_fields WHERE view_name = ? AND field_key = 'mcp_name'").get(view) as
+    | { display_order: number }
+    | undefined;
+  if (!mcp) continue;
+  db.prepare("UPDATE view_layout_fields SET display_order = display_order + 1 WHERE view_name = ? AND display_order > ?").run(view, mcp.display_order);
+  db.prepare(
+    "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES (?, 'project_name', 'Project Name', ?, 1, 0)"
+  ).run(view, mcp.display_order + 1);
+}
+if ((db.prepare("SELECT COUNT(*) AS n FROM field_requirements").get() as { n: number }).n > 0) {
+  db.prepare(
+    `INSERT OR IGNORE INTO field_requirements (object_type, field_name, label, is_system, required, required_at)
+     VALUES ('project', 'project_name', 'Project Name', 0, 0, 'creation')`
+  ).run();
+}
 
 // E4: retire the Skipped task status by archiving it (governing principle:
 // used values are archived, never deleted). It disappears from the status

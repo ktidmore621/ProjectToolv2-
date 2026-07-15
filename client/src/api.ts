@@ -110,6 +110,8 @@ export interface Project {
   project_code: string;
   mcp_number: string;
   mcp_name: string;
+  /** E3: optional free-text project name, shown immediately after MCP Name. */
+  project_name: string | null;
   assignee_id: number;
   assignee_name: string;
   annualized_premium: number | null;
@@ -171,6 +173,7 @@ export interface Task {
   // present on cross-project task rows
   project_code?: string;
   mcp_name?: string;
+  project_name?: string | null;
 }
 
 export interface Activity {
