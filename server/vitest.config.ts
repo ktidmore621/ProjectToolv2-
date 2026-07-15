@@ -7,6 +7,8 @@ export default defineConfig({
     isolate: true,
     env: {
       ACCIO_DB_PATH: ":memory:",
+      // E6 tests assert Central-Time behavior independent of the host zone
+      TZ: "UTC",
     },
   },
 });

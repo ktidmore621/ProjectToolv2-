@@ -41,6 +41,25 @@ export function valueById(id: number | null | undefined): PickValue | undefined 
   return db.prepare("SELECT * FROM picklist_values WHERE id = ?").get(id) as PickValue | undefined;
 }
 
+/**
+ * E6: all date-based calculations and status determinations run on Central
+ * Time via the IANA zone America/Chicago — NOT a hardcoded UTC-6 offset.
+ * Central observes DST (CDT, UTC-5) from March to November; a fixed offset
+ * would be an hour off for two-thirds of the year and silently flip
+ * due/overdue determinations around midnight. Intl handles the transitions.
+ */
+const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** Today's calendar date in Central Time, as YYYY-MM-DD. */
+export function todayCentral(): string {
+  return CENTRAL_DATE.format(new Date());
+}
+
 /** System keys for statuses that count as "not active". */
 export const CLOSED_KEYS = ["closed", "cancelled"];
 export const DONE_TASK_KEYS = ["complete", "skipped", "cancelled"];
@@ -308,7 +327,7 @@ export function computeRag(project: any): { rag: "red" | "amber" | "green"; reas
   const redOverdue = getSettingNum("rag_red_overdue_days", 3);
   const amberDue = getSettingNum("rag_amber_due_days", 3);
   const stallDays = getSettingNum("rag_stall_days", 7);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral(); // E6: due/overdue flips at Central midnight, not UTC's
 
   const doneIds = valuesFor("Task Status")
     .filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? ""))
@@ -373,7 +392,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     .sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
 
   const statusChanged = (p.status_changed_date ?? p.created_date).slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral();
   const daysInStatus = Math.max(
     0,
     Math.floor((new Date(today + "T00:00:00Z").getTime() - new Date(statusChanged + "T00:00:00Z").getTime()) / 86400000)

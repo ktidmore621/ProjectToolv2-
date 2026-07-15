@@ -20,7 +20,9 @@ const ok = (data: any, status = 200): Res => ({ status, data: clone(data) });
 const err = (status: number, error: string, extra: any = {}): Res => ({ status, data: { error, ...extra } });
 const clone = (x: any) => (x === undefined ? null : JSON.parse(JSON.stringify(x)));
 
-const today = () => new Date().toISOString().slice(0, 10);
+// E6: date-based determinations run on Central Time via the IANA zone (DST-aware)
+const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" });
+const today = () => CENTRAL_DATE.format(new Date());
 const daysBetween = (a: string, b: string) =>
   Math.floor((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
 const settingNum = (key: string, fallback: number) => {

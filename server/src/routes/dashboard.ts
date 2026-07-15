@@ -1,15 +1,15 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { CLOSED_KEYS, DONE_TASK_KEYS, serializeActivity, serializeProject, serializeWin, valuesFor } from "../core.js";
+import { CLOSED_KEYS, DONE_TASK_KEYS, serializeActivity, serializeProject, serializeWin, todayCentral, valuesFor } from "../core.js";
 
 export const dashboard = Router();
 
 function isoOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-/** Monday of the week containing `d` — same convention as the timecard grid. */
-function weekStartIso(d: Date): string {
-  const x = new Date(d);
+/** Monday of the week containing the ISO date — same convention as the timecard grid. */
+function weekStartIso(iso: string): string {
+  const x = new Date(iso + "T00:00:00");
   x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
   return isoOf(x);
 }
@@ -41,7 +41,7 @@ dashboard.get("/", (req, res) => {
   const blockedId = blockedVal?.id;
   const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const now = new Date();
-  const today = isoOf(now);
+  const today = todayCentral(); // E6: "today" is the Central calendar date
   const yesterday = addDaysIso(today, -1);
   const weekAgo = addDaysIso(today, -7);
 
@@ -90,7 +90,7 @@ dashboard.get("/", (req, res) => {
   };
 
   // ---- "This Week" panel (§2.2): tasks due + logged/scheduled activities, Mon–Sun ----
-  const wkStart = weekStartIso(now);
+  const wkStart = weekStartIso(today);
   const wkEnd = addDaysIso(wkStart, 6);
   const nowStamp = now.toISOString().slice(0, 16).replace("T", " ");
 

@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import {
   CLOSED_KEYS, CustomField, activeCustomFields, customCsvValue, fmtCurrency, generateTasksFromTemplate,
   logActivity, nextProjectCode, parseCurrency, parseCustomValue, saveCustomValues, serializeProject, serializeWin,
-  valueByMapsTo, valuesFor,
+  todayCentral, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const importexport = Router();
@@ -198,7 +198,7 @@ function validateImport(csvText: string): { rows: ImportRow[]; headerError?: str
     }
     if (row.assignment_date && !/^\d{4}-\d{2}-\d{2}$/.test(row.assignment_date))
       row.errors.push("Assignment date must be YYYY-MM-DD");
-    if (!row.assignment_date) row.assignment_date = new Date().toISOString().slice(0, 10);
+    if (!row.assignment_date) row.assignment_date = todayCentral();
     if (row.template) {
       const t = templates.find((t) => t.name.toLowerCase() === row.template.toLowerCase());
       if (!t) row.errors.push(`Unknown template "${row.template}"`);

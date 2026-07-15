@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { isClosedStatus, logActivity, serializeWin } from "../core.js";
+import { isClosedStatus, logActivity, serializeWin, todayCentral } from "../core.js";
 
 export const wins = Router();
 
@@ -27,7 +27,7 @@ wins.post("/", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(project_id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only — wins are logged while the project is open" });
-  const occurred = occurred_date || new Date().toISOString().slice(0, 10);
+  const occurred = occurred_date || todayCentral();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(occurred)) return res.status(400).json({ error: "Occurred date must be YYYY-MM-DD" });
   const id = db.prepare(
     "INSERT INTO wins (project_id, description, category_id, occurred_date, logged_by) VALUES (?, ?, ?, ?, ?)"

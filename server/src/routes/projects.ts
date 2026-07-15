@@ -4,7 +4,7 @@ import { db } from "../db.js";
 import {
   CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
   logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
-  validateCustomValues, valueById, valueByMapsTo, valuesFor,
+  todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -298,7 +298,7 @@ tasks.get("/", (req, res) => {
   const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const doneIds = valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const blockedId = valueByMapsTo("Task Status", "blocked")?.id;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCentral(); // E6: overdue is judged on the Central calendar date
 
   let sql = `SELECT t.*, p.project_code, p.mcp_name, p.assignee_id AS project_assignee_id FROM project_tasks t
              JOIN projects p ON p.id = t.project_id
@@ -408,7 +408,7 @@ tasks.post("/:id/status", (req, res) => {
   ).run(
     status_id,
     target.maps_to === "skipped" ? (skip_reason ?? null) : t.skip_reason,
-    isDone ? new Date().toISOString().slice(0, 10) : null,
+    isDone ? todayCentral() : null,
     isDone ? user_id : null,
     t.id
   );
