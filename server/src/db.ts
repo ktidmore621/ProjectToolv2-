@@ -7,7 +7,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = join(__dirname, "..", "data");
 mkdirSync(dataDir, { recursive: true });
 
-export const db = new Database(join(dataDir, "cat.db"));
+// ACCIO_DB_PATH lets tests point at a throwaway database (e.g. ':memory:')
+const dbPath = process.env.ACCIO_DB_PATH ?? join(dataDir, "cat.db");
+export const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
@@ -180,6 +182,13 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- Monotonic sequences (B3): project codes come from here, never COUNT(*)+1,
+-- so deleting a project or creating two concurrently can't collide.
+CREATE TABLE IF NOT EXISTS counters (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+
 -- Admin-defined project fields (no code change needed). Dropdown options live in
 -- the standard picklist system so option management reuses Picklists & Values.
 CREATE TABLE IF NOT EXISTS custom_fields (
@@ -216,6 +225,19 @@ ensureColumn("users", "dashboard_scope", "TEXT NOT NULL DEFAULT 'mine'");
 ensureColumn("users", "default_assignee_filter", "TEXT");
 ensureColumn("users", "show_configuration", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("projects", "annualized_premium", "REAL");
+// B1: archived picklist values — hidden from dropdowns for new entries, but
+// still rendered on every legacy record that references them (never deleted).
+ensureColumn("picklist_values", "archived", "INTEGER NOT NULL DEFAULT 0");
+// B4: link a win to the system note logged at creation, so deleting the win
+// can clean up the note instead of orphaning it.
+ensureColumn("wins", "activity_id", "INTEGER REFERENCES activities(id)");
+
+// B3: seed the project-code counter from the highest code ever issued (not the
+// row count — deleted projects must never free their numbers for reuse).
+db.prepare(
+  `INSERT OR IGNORE INTO counters (key, value)
+   SELECT 'project_code', COALESCE(MAX(CAST(SUBSTR(project_code, 5) AS INTEGER)), 0) FROM projects`
+).run();
 
 // Decision-point mechanism removed: databases seeded before the removal may
 // still hold hidden conditional tasks (conditional_pending = 1). They were

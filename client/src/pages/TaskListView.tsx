@@ -14,7 +14,7 @@ import { defaultAssigneeOf, useConfig, useSession } from "../state";
 export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const [params, setParams] = useSearchParams();
   const { users, currentUser } = useSession();
-  const { activeValues } = useConfig();
+  const { activeValues, archivedValues } = useConfig();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
@@ -93,6 +93,12 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
           onChange={(e) => setFilter("status_id", e.target.value)}>
           <option value="">All statuses</option>
           {activeValues("Task Status").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          {/* B1: archived statuses stay findable — legacy records still carry them */}
+          {archivedValues("Task Status").length > 0 && (
+            <optgroup label="Archived">
+              {archivedValues("Task Status").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </optgroup>
+          )}
         </select>
         {tasks && <span className="ml-auto text-xs text-muted"><Mono>{tasks.length}</Mono> task(s)</span>}
       </div>

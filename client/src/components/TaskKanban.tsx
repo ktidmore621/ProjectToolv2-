@@ -14,11 +14,16 @@ export function TaskKanban({ tasks, readOnly, onMove }: {
   readOnly: boolean;
   onMove: (task: Task, statusId: number) => Promise<boolean>;
 }) {
-  const { activeValues } = useConfig();
+  const { activeValues, archivedValues } = useConfig();
   const cardFields = useLayout("task_card");
   const [dragging, setDragging] = useState<Task | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const columns = activeValues("Task Status");
+  // B1/E4: archived statuses (e.g. legacy Skipped) can't be assigned anymore,
+  // but tasks still in them must remain visible — keep a column when occupied.
+  const columns = [
+    ...activeValues("Task Status"),
+    ...archivedValues("Task Status").filter((v) => tasks.some((t) => t.status_id === v.id)),
+  ];
 
   const byStatus = useMemo(() => {
     const m = new Map<number, Task[]>();

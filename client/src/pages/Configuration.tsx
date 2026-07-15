@@ -17,7 +17,10 @@ const TABS = [
 
 export function Configuration() {
   const { currentUser } = useSession();
-  // Users with Show Configuration off (Working As tab) can't see this page
+  // Users with Show Configuration off (Working As tab) can't see this page.
+  // B6 — SECURITY NOTE: this is UI visibility only, NOT access control. The
+  // /api/* configuration endpoints stay reachable regardless of this flag;
+  // see the "Security model" section of the README.
   if (currentUser && !currentUser.show_configuration) return <Navigate to="/" replace />;
   return (
     <Page title="Configuration">
@@ -87,7 +90,8 @@ function WorkingAs() {
         These users can access the system and appear in every assignment dropdown. <b>Home Default</b> controls
         whether their Home page opens scoped to their own items or to everything; <b>Default Assignee Filter</b> is the
         assignee pre-applied on the Project List, Kanban Board and Task List (they can still change it there);
-        <b> Show Configuration</b> controls whether this Configuration page is visible to them.
+        <b> Show Configuration</b> controls whether this Configuration page is visible to them
+        (visibility only — it is <b>not</b> a security control; see the README's "Security model").
       </p>
       <table className="w-full text-sm">
         <thead>
@@ -151,6 +155,8 @@ function Picklists() {
   const { picklists, refreshPicklists } = useConfig();
   const toast = useToast();
   const [selected, setSelected] = useState<string>("Project Status");
+  // B1: Archived filter — archived values stay findable here
+  const [valueFilter, setValueFilter] = useState<"active" | "archived" | "all">("active");
   const list = picklists.find((p) => p.name === selected);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("#2E4E8F");
@@ -185,12 +191,16 @@ function Picklists() {
   async function remove(v: PickValue) {
     try {
       const r = await api.del(`/api/picklist-values/${v.id}`);
-      toast(r.deactivated ? r.message : `Deleted "${v.label}".`, r.deactivated ? "warning" : "success");
+      toast(r.archived ? r.message : `Deleted "${v.label}".`, r.archived ? "warning" : "success");
       refreshPicklists();
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
   }
 
   if (!picklists.length) return <Skeleton className="h-72" />;
+
+  const visibleValues = (list?.values ?? []).filter((v) =>
+    valueFilter === "all" ? true : valueFilter === "archived" ? !!v.archived : !v.archived
+  );
 
   return (
     <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
@@ -205,16 +215,29 @@ function Picklists() {
       </Card>
       {list && (
         <Card className="p-4">
-          <div className="mb-3 flex items-baseline justify-between">
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-sm font-semibold">{list.name}</h2>
-            {!!list.is_system && <span className="text-xs text-muted">System list — values can be relabeled, reordered and recolored, but not removed.</span>}
+            <span className="flex items-center gap-3">
+              {!!list.is_system && <span className="text-xs text-muted">System list — values can be relabeled, reordered and recolored, but not removed.</span>}
+              <select className={inputCls + " !w-auto !py-1 text-xs"} value={valueFilter} aria-label="Filter values"
+                onChange={(e) => setValueFilter(e.target.value as any)}>
+                <option value="active">Active values</option>
+                <option value="archived">Archived values</option>
+                <option value="all">All values</option>
+              </select>
+            </span>
           </div>
+          {visibleValues.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted">
+              {valueFilter === "archived" ? "No archived values in this list." : "No values match this filter."}
+            </p>
+          )}
           <ul className="divide-y divide-hairline">
-            {list.values.map((v, i) => (
-              <li key={v.id} className={`flex flex-wrap items-center gap-2 py-2 ${v.is_active ? "" : "opacity-50"}`}>
+            {visibleValues.map((v, i) => (
+              <li key={v.id} className={`flex flex-wrap items-center gap-2 py-2 ${v.is_active && !v.archived ? "" : "opacity-60"}`}>
                 <span className="flex gap-0.5">
                   <button onClick={() => move(v, -1)} disabled={i === 0} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} up`}>↑</button>
-                  <button onClick={() => move(v, 1)} disabled={i === list.values.length - 1} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} down`}>↓</button>
+                  <button onClick={() => move(v, 1)} disabled={i === visibleValues.length - 1} className="rounded px-1 text-muted hover:bg-canvas disabled:opacity-30" aria-label={`Move ${v.label} down`}>↓</button>
                 </span>
                 <input type="color" value={v.color} onChange={(e) => update(v, { color: e.target.value })}
                   className="h-7 w-9 cursor-pointer rounded border border-hairline" aria-label={`Color of ${v.label}`} />
@@ -226,14 +249,25 @@ function Picklists() {
                 />
                 <Chip label={v.label} color={v.color} small />
                 {!!v.is_default && <span className="rounded bg-primary-soft px-1.5 py-px text-[10px] font-semibold uppercase text-primary">default</span>}
+                {!!v.archived && <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted" title="Hidden from dropdowns for new entries; legacy records still display it.">archived</span>}
                 <span className="ml-auto flex items-center gap-1.5">
-                  {!v.is_default && !!v.is_active && <Btn small kind="ghost" onClick={() => update(v, { is_default: true })}>Set default</Btn>}
-                  {v.is_active ? (
+                  {!v.is_default && !!v.is_active && !v.archived && <Btn small kind="ghost" onClick={() => update(v, { is_default: true })}>Set default</Btn>}
+                  {!v.archived && (v.is_active ? (
                     <Btn small kind="ghost" onClick={() => update(v, { is_active: false })}>Deactivate</Btn>
                   ) : (
                     <Btn small kind="ghost" onClick={() => update(v, { is_active: true })}>Reactivate</Btn>
-                  )}
-                  <Btn small kind="danger" onClick={() => remove(v)}>Delete</Btn>
+                  ))}
+                  {/* B1: in-use values archive (hidden going forward, intact on legacy records); never-used values may still be hard-deleted */}
+                  {!(list.is_system && v.maps_to) && (v.archived ? (
+                    <Btn small kind="ghost" onClick={() => update(v, { archived: false })}>Restore</Btn>
+                  ) : (
+                    <>
+                      <Btn small kind="ghost" onClick={() => update(v, { archived: true })}
+                        title="Hide from dropdowns going forward; existing records keep displaying it.">Archive</Btn>
+                      <Btn small kind="danger" onClick={() => remove(v)}
+                        title="Deletes only if no record has ever used it — otherwise it is archived.">Delete</Btn>
+                    </>
+                  ))}
                 </span>
               </li>
             ))}

@@ -50,6 +50,8 @@ export interface PickValue {
   color: string;
   is_active: number;
   is_default: number;
+  /** B1: archived values are hidden from dropdowns for new entries but still render on legacy records. */
+  archived: number;
   maps_to: string | null;
 }
 export interface Picklist {
@@ -206,6 +208,7 @@ export interface Win {
   category_key: string | null;
   occurred_date: string;
   logged_date: string;
+  logged_by: number | null;
   logged_by_name: string | null;
   project_code: string | null;
   mcp_name: string | null;

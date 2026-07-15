@@ -59,8 +59,8 @@ export function logActivity(opts: {
   note?: string;
   old_status?: string | null;
   new_status?: string | null;
-}) {
-  db.prepare(
+}): number {
+  return db.prepare(
     `INSERT INTO activities (project_id, project_task_id, user_id, kind, category_id, note, old_status, new_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
@@ -72,12 +72,16 @@ export function logActivity(opts: {
     opts.note ?? "",
     opts.old_status ?? null,
     opts.new_status ?? null
-  );
+  ).lastInsertRowid as number;
 }
 
 export function nextProjectCode(): string {
-  const row = db.prepare("SELECT COUNT(*) AS n FROM projects").get() as { n: number };
-  return `CAP-${String(row.n + 1).padStart(4, "0")}`;
+  // Atomic increment of a dedicated sequence (B3). COUNT(*)+1 collided as soon
+  // as a project was deleted or two creates raced the unique constraint.
+  const row = db
+    .prepare("UPDATE counters SET value = value + 1 WHERE key = 'project_code' RETURNING value")
+    .get() as { value: number };
+  return `CAP-${String(row.value).padStart(4, "0")}`;
 }
 
 /** '$0,000.00' — the one AP/currency format used across tables, cards, headers and CSVs. */

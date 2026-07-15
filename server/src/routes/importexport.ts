@@ -9,7 +9,12 @@ import {
 export const importexport = Router();
 
 function csvEscape(v: unknown): string {
-  const s = v == null ? "" : String(v);
+  let s = v == null ? "" : String(v);
+  // B5: neutralize spreadsheet formula injection. Text starting with = + - @
+  // (or a stray tab/CR) would execute when the export is opened in Excel, so
+  // it's prefixed with a quote. Real numbers can't carry formulas and pass
+  // through untouched. Applies to every export via toCsv().
+  if (typeof v !== "number" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 function toCsv(headers: string[], rows: unknown[][]): string {

@@ -8,7 +8,7 @@ import { useConfig, useDefaultAssignee, useSession, useToast } from "../state";
 
 /** Portfolio Kanban — v1's standalone screen, now a view state inside Projects (v2 §1). */
 export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) {
-  const { activeValues } = useConfig();
+  const { activeValues, archivedValues } = useConfig();
   const { users, currentUser } = useSession();
   const toast = useToast();
   const navigate = useNavigate();
@@ -22,8 +22,13 @@ export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const statuses = activeValues("Project Status").filter((v) => !["closed", "cancelled"].includes(v.maps_to ?? ""));
+  // B1: an archived status can't be assigned anymore, but projects still in it
+  // must stay visible — render a column for any archived status holding projects.
+  const archivedWithProjects = archivedValues("Project Status").filter(
+    (v) => !["closed", "cancelled"].includes(v.maps_to ?? "") && (projects ?? []).some((p) => p.status_id === v.id)
+  );
   const closedCol = activeValues("Project Status").find((v) => v.maps_to === "closed");
-  const columns = closedCol ? [...statuses, closedCol] : statuses;
+  const columns = [...statuses, ...archivedWithProjects, ...(closedCol ? [closedCol] : [])];
 
   const load = useCallback(() => {
     const qs = new URLSearchParams();
@@ -89,6 +94,12 @@ export function PortfolioKanbanView({ toolbar }: { toolbar?: React.ReactNode }) 
             onChange={(e) => setFilters({ ...filters, risk_level_id: e.target.value })}>
             <option value="">All risk levels</option>
             {activeValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            {/* B1: archived values remain findable in filters */}
+            {archivedValues("Risk Level").length > 0 && (
+              <optgroup label="Archived">
+                {archivedValues("Risk Level").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+              </optgroup>
+            )}
           </select>
           <select className={inputCls + " !w-auto"} value={filters.template_id} aria-label="Filter by template"
             onChange={(e) => setFilters({ ...filters, template_id: e.target.value })}>

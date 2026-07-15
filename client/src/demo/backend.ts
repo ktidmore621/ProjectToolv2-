@@ -28,6 +28,15 @@ const settingNum = (key: string, fallback: number) => {
   return Number.isFinite(n) ? n : fallback;
 };
 const userName = (id: number | null | undefined) => db.users.find((u) => u.id === id)?.name;
+
+/** B3: sequence-style project codes — never derived from the row count. */
+function nextProjectCode(): string {
+  const stored = Number(db.settings.project_code_seq ?? 0);
+  const maxExisting = Math.max(0, ...db.projects.map((p) => Number(String(p.project_code).slice(4)) || 0));
+  const next = Math.max(stored, maxExisting) + 1;
+  db.settings.project_code_seq = String(next);
+  return `CAP-${String(next).padStart(4, "0")}`;
+}
 const isClosedStatus = (statusId: number) => CLOSED_KEYS.includes(valueById(statusId)?.maps_to ?? "");
 const doneStatusIds = () => valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 const activeStatusIds = () => valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
@@ -371,7 +380,7 @@ route("POST", "/api/picklists/:id/values", (m, _q, b) => {
   if (!list) return err(404, "Picklist not found");
   if (!b.label?.trim()) return err(400, "Label is required");
   const max = Math.max(0, ...db.picklist_values.filter((v) => v.picklist_id === list.id).map((v) => v.sort_order));
-  const v = { id: nextId(), picklist_id: list.id, label: b.label.trim(), sort_order: max + 1, color: b.color || "#64748B", is_active: 1, is_default: 0, maps_to: null };
+  const v = { id: nextId(), picklist_id: list.id, label: b.label.trim(), sort_order: max + 1, color: b.color || "#64748B", is_active: 1, is_default: 0, archived: 0, maps_to: null };
   db.picklist_values.push(v);
   return ok(v, 201);
 });
@@ -387,28 +396,39 @@ route("PATCH", "/api/picklist-values/:id", (m, _q, b) => {
       return err(400, "System values can't be deactivated — board logic depends on them");
     v.is_active = b.is_active ? 1 : 0;
   }
+  if (b.archived !== undefined) {
+    // B1: explicit archive/restore, same system-value guard as deactivation
+    const list = db.picklists.find((l) => l.id === v.picklist_id)!;
+    if (list.is_system && v.maps_to)
+      return err(400, "System values can't be archived or restored — board logic depends on them");
+    v.archived = b.archived ? 1 : 0;
+  }
   if (b.is_default) {
     for (const x of db.picklist_values) if (x.picklist_id === v.picklist_id) x.is_default = 0;
     v.is_default = 1;
   }
   return ok(v);
 });
+/** B1: used values are archived (never deleted); never-used values may be hard-deleted. */
 route("DELETE", "/api/picklist-values/:id", (m) => {
   const v = db.picklist_values.find((x) => x.id === Number(m.id));
   if (!v) return err(404, "Value not found");
   const list = db.picklists.find((l) => l.id === v.picklist_id)!;
   if (list.is_system && v.maps_to)
-    return err(400, "System values can't be deleted — deactivation isn't allowed either since board logic depends on them");
+    return err(400, "System values can't be deleted or archived — board logic depends on them");
+  const dropdownFieldIds = new Set(db.custom_fields.filter((f) => f.field_type === "dropdown").map((f) => f.id));
   const refs =
     db.projects.filter((p) => [p.status_id, p.risk_level_id, p.close_reason_id].includes(v.id)).length +
     db.project_tasks.filter((t) => [t.status_id, t.priority_id].includes(v.id)).length +
     db.time_logs.filter((l) => l.activity_type_id === v.id).length +
     db.activities.filter((a) => a.category_id === v.id || a.activity_type_id === v.id).length +
     db.wins.filter((w) => w.category_id === v.id).length +
-    db.template_tasks.filter((t) => t.default_priority_id === v.id).length;
+    db.template_tasks.filter((t) => t.default_priority_id === v.id).length +
+    // B1: dropdown selections stored in custom-value tables count as references too
+    db.project_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length;
   if (refs > 0) {
-    v.is_active = 0;
-    return ok({ deactivated: true, message: `"${v.label}" is referenced by ${refs} record(s) — deactivated instead of deleted. Existing records keep it; it disappears from new dropdowns.` });
+    v.archived = 1;
+    return ok({ archived: true, message: `"${v.label}" is referenced by ${refs} record(s), so it was archived instead of deleted. Existing records keep displaying it; it no longer appears in dropdowns for new entries.` });
   }
   db.picklist_values = db.picklist_values.filter((x) => x.id !== v.id);
   return ok({ deleted: true });
@@ -449,7 +469,7 @@ route("POST", "/api/custom-fields", (_m, _q, b) => {
     opts.forEach((o: string, i: number) =>
       db.picklist_values.push({
         id: nextId(), picklist_id: picklistId, label: o, sort_order: i + 1,
-        color: OPTION_COLORS[i % OPTION_COLORS.length], is_active: 1, is_default: i === 0 ? 1 : 0, maps_to: null,
+        color: OPTION_COLORS[i % OPTION_COLORS.length], is_active: 1, is_default: i === 0 ? 1 : 0, archived: 0, maps_to: null,
       })
     );
   }
@@ -652,7 +672,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const tpl = db.workflow_templates.find((t) => t.id === Number(b.template_id) && t.is_active);
   if (!tpl) return err(400, "Selected template is not available");
 
-  const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
+  const code = nextProjectCode();
   const p: Row = {
     id: nextId(), project_code: code, mcp_number: b.mcp_number, mcp_name: b.mcp_name,
     assignee_id: b.assignee_id, annualized_premium: ap, assignment_date: b.assignment_date, target_date: b.target_date ?? null,
@@ -742,6 +762,15 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
     return err(422, "An override reason is required", { problems });
   const closed = valueByMapsTo("Project Status", "closed")!;
   const old = valueById(p.status_id);
+  // B2: clear any manual RAG override at closure so history reports Closed = Green
+  if (p.rag_override) {
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `cleared manual RAG override (${String(p.rag_override).toUpperCase()}: ${p.rag_override_reason ?? "no reason recorded"}) as part of closure — closed projects report Green`,
+    });
+  }
+  p.rag_override = null;
+  p.rag_override_reason = null;
   p.status_id = closed.id;
   p.status_changed_date = now();
   p.closed_date = now();
@@ -758,6 +787,8 @@ route("POST", "/api/projects/:id/close", (m, _q, b) => {
 route("POST", "/api/projects/:id/rag-override", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
+  // Closed projects report "Closed = Green" (B2) — overrides can't be re-applied
+  if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   if (b.rag && !["red", "amber", "green"].includes(b.rag)) return err(400, "Invalid RAG value");
   if (b.rag && !b.reason?.trim()) return err(400, "An override reason is required for auditability");
   p.rag_override = b.rag ?? null;
@@ -1054,17 +1085,28 @@ route("POST", "/api/wins", (_m, _q, b) => {
   const w: Row = {
     id: nextId(), project_id: b.project_id, description: b.description.trim(),
     category_id: b.category_id ?? null, occurred_date: occurred, logged_date: now(), logged_by: b.user_id ?? null,
+    activity_id: null,
   };
   db.wins.push(w);
-  logActivity({ project_id: b.project_id, user_id: b.user_id, kind: "system", note: `logged a win: "${w.description}"` });
+  const note = logActivity({ project_id: b.project_id, user_id: b.user_id, kind: "system", note: `logged a win: "${w.description}"` });
+  w.activity_id = note.id;
   return ok(serializeWin(w), 201);
 });
-route("DELETE", "/api/wins/:id", (m) => {
+/** B4: author-only, audited deletion; the creation system note is cleaned up too. */
+route("DELETE", "/api/wins/:id", (m, q, b) => {
   const w = db.wins.find((x) => x.id === Number(m.id));
   if (!w) return err(404, "Win not found");
   const p = db.projects.find((x) => x.id === w.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
+  const userId = Number(q.get("user_id") ?? b?.user_id);
+  if (!userId || !w.logged_by || userId !== w.logged_by) return err(403, "Only the author of a win can delete it");
+  db.activities = db.activities.filter((a) =>
+    w.activity_id
+      ? !(a.id === w.activity_id && a.kind === "system")
+      : !(a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"`)
+  );
   db.wins = db.wins.filter((x) => x.id !== w.id);
+  logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
   return ok({ ok: true });
 });
 
@@ -1318,7 +1360,7 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
   const created: string[] = [];
   const fieldIdByKey = new Map(activeCustomFields().map((f) => [f.field_key, f.id]));
   for (const r of valid) {
-    const code = `CAP-${String(db.projects.length + 1).padStart(4, "0")}`;
+    const code = nextProjectCode();
     const pid = nextId();
     db.projects.push({
       id: pid, project_code: code, mcp_number: r.mcp_number, mcp_name: r.mcp_name,
@@ -1344,7 +1386,9 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
 // ---------------- CSV export (returns content for a blob download) ----------------
 
 function csvEscape(v: unknown): string {
-  const s = v == null ? "" : String(v);
+  let s = v == null ? "" : String(v);
+  // B5: neutralize spreadsheet formula injection (=, +, -, @ prefixes) — see server importexport.ts
+  if (typeof v !== "number" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 const toCsv = (headers: string[], rows: unknown[][]) =>

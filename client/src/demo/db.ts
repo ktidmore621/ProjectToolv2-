@@ -73,6 +73,9 @@ function load(): DemoDB | null {
         u.default_assignee_filter ??= null;
         u.show_configuration ??= 1;
       }
+      // B1: archived picklist values / B4: win → system-note link
+      for (const v of loaded.picklist_values) v.archived ??= 0;
+      for (const w of loaded.wins) w.activity_id ??= null;
       if (!loaded.users.some((u) => u.name === "Leader" || u.email === "leader@example.com"))
         loaded.users.push({
           id: ++loaded.seq, name: "Leader", email: "leader@example.com", is_active: 1,
@@ -192,7 +195,7 @@ function freshDb(): void {
     values.forEach(([label, color, mapsTo, isDefault], i) =>
       db.picklist_values.push({
         id: nextId(), picklist_id: pid, label, sort_order: i + 1, color,
-        is_active: 1, is_default: isDefault ?? 0, maps_to: mapsTo,
+        is_active: 1, is_default: isDefault ?? 0, archived: 0, maps_to: mapsTo,
       })
     );
   }

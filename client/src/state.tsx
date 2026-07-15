@@ -62,7 +62,10 @@ export const useToast = () => useContext(ToastCtx).toast;
 interface Config {
   picklists: Picklist[];
   list: (name: string) => Picklist | undefined;
+  /** Values offered for NEW entries: active and not archived (B1). */
   activeValues: (name: string) => Picklist["values"];
+  /** Archived values (B1) — still valid on legacy records, offered in filters so history stays findable. */
+  archivedValues: (name: string) => Picklist["values"];
   refreshPicklists: () => Promise<void>;
 }
 const ConfigCtx = createContext<Config>(null!);
@@ -103,11 +106,12 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   }, []);
 
   const list = (name: string) => picklists.find((p) => p.name === name);
-  const activeValues = (name: string) => (list(name)?.values ?? []).filter((v) => v.is_active);
+  const activeValues = (name: string) => (list(name)?.values ?? []).filter((v) => v.is_active && !v.archived);
+  const archivedValues = (name: string) => (list(name)?.values ?? []).filter((v) => v.archived);
 
   return (
     <SessionCtx.Provider value={{ users, currentUser, setCurrentUser, refreshUsers }}>
-      <ConfigCtx.Provider value={{ picklists, list, activeValues, refreshPicklists }}>
+      <ConfigCtx.Provider value={{ picklists, list, activeValues, archivedValues, refreshPicklists }}>
         <ToastCtx.Provider value={{ toasts, toast }}>
           {children}
           <ToastViewport toasts={toasts} />

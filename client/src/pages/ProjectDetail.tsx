@@ -189,6 +189,10 @@ export function ProjectDetail() {
                         value={t.status_id}
                         onChange={(e) => changeTaskStatus(t, Number(e.target.value))}
                       >
+                        {/* keep the current (possibly archived/deactivated) value rendering correctly */}
+                        {!activeValues("Task Status").some((v) => v.id === t.status_id) && (
+                          <option value={t.status_id} disabled>{t.status_label}</option>
+                        )}
                         {activeValues("Task Status").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
                       </select>
                       {t.skip_reason && <div className="mt-1 text-[11px] text-muted">Skipped: {t.skip_reason}</div>}
@@ -928,9 +932,10 @@ function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean })
     } catch (err) { toast(err instanceof Error ? err.message : "Failed to log win", "error"); }
   }
 
+  // B4: deletion is author-only and audited server-side
   async function remove(w: Win) {
     try {
-      await api.del(`/api/wins/${w.id}`);
+      await api.del(`/api/wins/${w.id}?user_id=${currentUser?.id}`);
       toast("Win removed.", "info");
       load();
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
@@ -956,7 +961,7 @@ function WinsTab({ project, readOnly }: { project: Project; readOnly: boolean })
                 <span>· Logged <Mono>{fmtDate(w.logged_date)}</Mono>{w.logged_by_name && <> by {w.logged_by_name}</>}</span>
               </div>
             </div>
-            {!readOnly && (
+            {!readOnly && currentUser && w.logged_by === currentUser.id && (
               <button onClick={() => remove(w)} aria-label="Remove win" className="rounded p-1 text-muted hover:bg-canvas hover:text-rag-red">✕</button>
             )}
           </Card>

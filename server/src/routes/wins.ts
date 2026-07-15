@@ -32,15 +32,38 @@ wins.post("/", (req, res) => {
   const id = db.prepare(
     "INSERT INTO wins (project_id, description, category_id, occurred_date, logged_by) VALUES (?, ?, ?, ?, ?)"
   ).run(project_id, description.trim(), category_id ?? null, occurred, user_id ?? null).lastInsertRowid;
-  logActivity({ project_id, user_id, kind: "system", note: `logged a win: "${description.trim()}"` });
+  // Remember the system note's id so deleting the win can remove it too (B4)
+  const activityId = logActivity({ project_id, user_id, kind: "system", note: `logged a win: "${description.trim()}"` });
+  db.prepare("UPDATE wins SET activity_id = ? WHERE id = ?").run(activityId, id);
   res.status(201).json(serializeWin(db.prepare("SELECT * FROM wins WHERE id = ?").get(id)));
 });
 
+/**
+ * B4: wins feed leadership reporting, so deletion is author-only and audited.
+ * The acting user comes from ?user_id= (DELETE bodies aren't reliable).
+ */
 wins.delete("/:id", (req, res) => {
   const w = db.prepare("SELECT * FROM wins WHERE id = ?").get(req.params.id) as any;
   if (!w) return res.status(404).json({ error: "Win not found" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(w.project_id) as any;
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
-  db.prepare("DELETE FROM wins WHERE id = ?").run(w.id);
+  const userId = Number(req.query.user_id ?? req.body?.user_id);
+  if (!userId || !w.logged_by || userId !== w.logged_by)
+    return res.status(403).json({ error: "Only the author of a win can delete it" });
+
+  const remove = db.transaction(() => {
+    // Delete the win first — its activity_id references the system note.
+    db.prepare("DELETE FROM wins WHERE id = ?").run(w.id);
+    // Remove the "logged a win" system note so it doesn't orphan; legacy wins
+    // (created before activity_id existed) are matched by their exact note text.
+    if (w.activity_id) {
+      db.prepare("DELETE FROM activities WHERE id = ? AND kind = 'system'").run(w.activity_id);
+    } else {
+      db.prepare("DELETE FROM activities WHERE project_id = ? AND kind = 'system' AND note = ?")
+        .run(w.project_id, `logged a win: "${w.description}"`);
+    }
+    logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
+  });
+  remove();
   res.json({ ok: true });
 });

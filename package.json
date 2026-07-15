@@ -2,7 +2,7 @@
   "name": "accio",
   "private": true,
   "version": "1.0.0",
-  "description": "Accio \u2014 configurable workflow app for tracking at-risk customer (MCP) recovery work",
+  "description": "Accio — configurable workflow app for tracking at-risk customer (MCP) recovery work",
   "workspaces": [
     "server",
     "client"
@@ -13,7 +13,8 @@
     "build": "npm run build -w client",
     "build:demo": "npm run build:demo -w client && node -e \"require('fs').mkdirSync('demo',{recursive:true}); require('fs').copyFileSync('client/dist-demo/index.html','demo/Accio (Demo).html')\"",
     "start": "npm run start -w server",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "test": "npm run test -w server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

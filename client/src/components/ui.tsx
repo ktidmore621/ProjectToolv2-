@@ -79,10 +79,10 @@ export function Modal({
 }
 
 export function Btn({
-  children, onClick, kind = "secondary", type = "button", disabled, small,
+  children, onClick, kind = "secondary", type = "button", disabled, small, title,
 }: {
   children: ReactNode; onClick?: () => void; kind?: "primary" | "secondary" | "danger" | "ghost";
-  type?: "button" | "submit"; disabled?: boolean; small?: boolean;
+  type?: "button" | "submit"; disabled?: boolean; small?: boolean; title?: string;
 }) {
   const styles = {
     primary: "bg-primary text-white hover:bg-primary/90",
@@ -91,7 +91,7 @@ export function Btn({
     ghost: "text-muted hover:bg-canvas hover:text-ink",
   }[kind];
   return (
-    <button type={type} onClick={onClick} disabled={disabled}
+    <button type={type} onClick={onClick} disabled={disabled} title={title}
       className={`rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${small ? "px-2.5 py-1 text-xs" : "px-3.5 py-1.5 text-sm"} ${styles}`}>
       {children}
     </button>

@@ -80,7 +80,7 @@ export function CustomFieldInputs({ fields, values, onChange }: {
           {f.field_type === "dropdown" ? (
             <select className={inputCls} value={values[f.field_key] ?? ""} onChange={(e) => onChange(f.field_key, e.target.value)}>
               <option value="">—</option>
-              {f.options.filter((o) => o.is_active || String(o.id) === values[f.field_key]).map((o) => (
+              {f.options.filter((o) => (o.is_active && !o.archived) || String(o.id) === values[f.field_key]).map((o) => (
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>

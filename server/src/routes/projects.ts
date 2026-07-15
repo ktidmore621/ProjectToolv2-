@@ -220,8 +220,17 @@ projects.post("/:id/close", (req, res) => {
   const old = valueById(p.status_id);
   db.prepare(
     `UPDATE projects SET status_id = ?, status_changed_date = datetime('now'), closed_date = datetime('now'),
-       closed_by = ?, close_reason_id = ?, final_summary = ? WHERE id = ?`
+       closed_by = ?, close_reason_id = ?, final_summary = ?, rag_override = NULL, rag_override_reason = NULL WHERE id = ?`
   ).run(closed.id, b.user_id, b.close_reason_id ?? null, b.final_summary ?? null, p.id);
+  // B2: a manual RAG override outlives its purpose at closure — clearing it
+  // here (audited) keeps historical reporting on "Closed = Green" instead of
+  // freezing a stale Red/Amber on a read-only record forever.
+  if (p.rag_override) {
+    logActivity({
+      project_id: p.id, user_id: b.user_id, kind: "system",
+      note: `cleared manual RAG override (${String(p.rag_override).toUpperCase()}: ${p.rag_override_reason ?? "no reason recorded"}) as part of closure — closed projects report Green`,
+    });
+  }
   logActivity({
     project_id: p.id, user_id: b.user_id, kind: "status_change",
     note: b.override
@@ -236,6 +245,8 @@ projects.post("/:id/close", (req, res) => {
 projects.post("/:id/rag-override", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
+  // Closed projects report "Closed = Green" (B2) — overrides can't be re-applied
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
   const { rag, reason, user_id } = req.body as { rag: string | null; reason?: string; user_id: number };
   if (rag && !["red", "amber", "green"].includes(rag)) return res.status(400).json({ error: "Invalid RAG value" });
   if (rag && !reason?.trim()) return res.status(400).json({ error: "An override reason is required for auditability" });

@@ -74,6 +74,16 @@ All editable in **Configuration** after the fact:
 - RAG thresholds: Red = required task overdue **3+** days; Amber = due within **3** days or stalled **7** days (Configuration → Field Requirements).
 - Default template due offsets: +5/+10/+14/+16 days for the analysis steps, +21/+28 for the action-plan tasks, +30 for final review/close; High priority for analysis & visit, Medium otherwise.
 
+## Security model (read this before deploying beyond a trusted team)
+
+- **There is no authentication.** "Working as" is a convenience switcher, not sign-in.
+- **`Show Configuration` is UI visibility only, not access control.** Turning it off hides the
+  Configuration nav item and redirects the page, but **every `/api/*` configuration endpoint remains
+  reachable** by anyone who can reach the server. The same applies to author-only rules (notes, wins):
+  they are enforced against a self-declared user id. Real authorization requires adding
+  authentication and server-side permission checks to the routes in `server/src/routes/config.ts`
+  (and friends) — the `users` table leaves room for an `is_admin` flag without schema redesign.
+
 ## Layout
 
 ```
