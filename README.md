@@ -67,6 +67,29 @@ npm start            # Express serves API + built client on :3001
 - **§6 Activity visibility** — clickable Activity-count column on both task lists opens a side drawer (type, date, derived duration, user, notes) with a jump to the full record.
 - **§7 Collapsed nav** — the user selector collapses to a circular initials avatar with a popover switcher (option A).
 
+## v3 enhancements & fixes (per the "Enhancements & Bug Fixes" batch)
+
+- **Archive, never delete** — a picklist value that has ever been used is *archived* on deletion:
+  hidden from dropdowns for new entries, rendered unchanged on every legacy record, findable via the
+  Archived filters (Configuration → Picklists & Values, plus record filters). Never-used values can
+  still be hard-deleted. The reference check covers custom-field values (project *and* task).
+- **Skipped retired (E4)** — the Skipped task status is archived; legacy Skipped tasks still render and
+  still satisfy closure, but new tasks are either completed or **deleted** (trash icon, with confirmation).
+  Deleting a task re-parents its time logs and notes/activities to the project — timecards lose nothing.
+- **Cancellation = closure (E5)** — cancelling runs the full closure workflow (audit, read-only,
+  cleared RAG overrides); it requires a Close Reason, Final Summary optional.
+- **Central Time (E6)** — all due/overdue/RAG date logic runs on `America/Chicago` (DST-aware).
+- **Project Name (E3)** — optional free-text field shown right after MCP Name everywhere.
+- **Task custom fields (E9)** — the custom-field engine supports `object_type: task`; task fields appear
+  on task forms, the task modal, and the task list/card layouts (cross-project Task List honors layout config).
+- **In-task time logging & status (E1/E2)** — both live in the Task modal, backed by the same stores.
+- **Wins (B4/E8)** — author-only edit/delete, audit-logged, no orphaned system notes.
+- **Reporting (E10/E11)** — RAG summaries show count + total AP; big lists paginate server-side (25/page).
+- **Robustness** — project codes come from a sequence (B3), CSV exports are formula-injection safe (B5),
+  API errors are structured JSON with server-side-only stack traces (B7).
+- **Tests** — `npm test` runs the vitest + supertest suite in `server/test/`
+  (`ACCIO_DB_PATH` points the server at a throwaway database).
+
 ## Defaults chosen for the §11 open items
 
 All editable in **Configuration** after the fact:
