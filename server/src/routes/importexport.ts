@@ -31,7 +31,7 @@ importexport.get("/export/projects.csv", (req, res) => {
   let projects = (db.prepare("SELECT * FROM projects ORDER BY created_date").all() as any[]).map((p) => serializeProject(p));
   if (scope === "active") projects = projects.filter((p) => !p.is_closed);
   if (scope === "closed") projects = projects.filter((p) => p.is_closed);
-  const customFields = activeCustomFields();
+  const customFields = activeCustomFields("project");
   const csv = toCsv(
     ["Project ID", "MCP #", "MCP Name", "Project Name", "Assignee", "AP", "Assignment Date", "Status", "RAG", "Risk", "Open Tasks", "Created", "Closed", "Close Reason", ...customFields.map((f) => f.label)],
     projects.map((p) => [
@@ -159,7 +159,7 @@ function validateImport(csvText: string): { rows: ImportRow[]; headerError?: str
   const activeIds = valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
   const seen = new Set<string>();
   // Custom-field columns match by label or field_key, so exports round-trip
-  const customCols: [CustomField, number][] = activeCustomFields()
+  const customCols: [CustomField, number][] = activeCustomFields("project")
     .map((f): [CustomField, number] => [f, col([normalizeHeader(f.label), f.field_key])])
     .filter(([, i]) => i >= 0);
 
@@ -232,7 +232,7 @@ importexport.post("/import/projects/commit", (req, res) => {
   const valid = rows.filter((r) => !r.errors.length && r.assignee_id && r.template_id);
   const statusNew = valueByMapsTo("Project Status", "new")!;
   const created: string[] = [];
-  const fieldIdByKey = new Map(activeCustomFields().map((f) => [f.field_key, f.id]));
+  const fieldIdByKey = new Map(activeCustomFields("project").map((f) => [f.field_key, f.id]));
   const run = db.transaction(() => {
     for (const r of valid) {
       const code = nextProjectCode();
@@ -248,7 +248,7 @@ importexport.post("/import/projects/commit", (req, res) => {
         const fid = fieldIdByKey.get(key);
         if (fid) parsed.set(fid, value);
       }
-      saveCustomValues(pid, parsed);
+      saveCustomValues("project", pid, parsed);
       generateTasksFromTemplate(pid, r.template_id!, r.assignment_date, r.assignee_id ?? null);
       logActivity({ project_id: pid, user_id, kind: "system", note: `Project ${code} created via CSV import` });
       created.push(code);

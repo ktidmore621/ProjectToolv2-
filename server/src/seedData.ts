@@ -8,7 +8,7 @@ import { generateTasksFromTemplate, logActivity, valueByMapsTo, valuesFor } from
 
 export function resetData() {
   db.exec(`
-    DELETE FROM project_custom_values; DELETE FROM custom_fields;
+    DELETE FROM project_custom_values; DELETE FROM task_custom_values; DELETE FROM custom_fields;
     DELETE FROM task_activity_links; DELETE FROM wins;
     DELETE FROM activities; DELETE FROM time_logs; DELETE FROM project_tasks;
     DELETE FROM projects; DELETE FROM template_tasks; DELETE FROM workflow_templates;

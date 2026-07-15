@@ -93,6 +93,7 @@ function serializeTask(t: Row) {
     priority_color: priority?.color ?? null,
     assigned_to_name: userName(t.assigned_to) ?? null,
     completed_by_name: userName(t.completed_by) ?? null,
+    custom: serializeCustomValues("task", t.id), // E9
     activity_count: db.task_activity_links.filter((l) => l.project_task_id === t.id).length,
     note_count: taskNotes.length,
     latest_note: latest ? { note: latest.note, activity_date: latest.activity_date, user_name: userName(latest.user_id) ?? null } : null,
@@ -160,9 +161,15 @@ function parseCurrency(raw: unknown): number | null {
   return Number(String(raw).replace(/[$,\s]/g, ""));
 }
 
-const activeCustomFields = () =>
+// E9: one custom-field engine for projects and tasks
+type CustomObjectType = "project" | "task";
+const CUSTOM_VALUE_STORES: Record<CustomObjectType, { rows: () => Row[]; fk: string }> = {
+  project: { rows: () => db.project_custom_values, fk: "project_id" },
+  task: { rows: () => db.task_custom_values, fk: "task_id" },
+};
+const activeCustomFields = (objectType: CustomObjectType = "project") =>
   db.custom_fields
-    .filter((f) => f.object_type === "project" && f.is_active)
+    .filter((f) => f.object_type === objectType && f.is_active)
     .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
 
 function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
@@ -201,11 +208,11 @@ function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string |
   }
 }
 
-function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined) {
+function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined) {
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
-  for (const f of activeCustomFields()) {
+  for (const f of activeCustomFields(objectType)) {
     const r = parseCustomValue(f, bodyCustom?.[f.field_key]);
     if (r.ok) {
       parsed.set(f.id, r.value);
@@ -215,18 +222,20 @@ function validateCustomValues(bodyCustom: Record<string, unknown> | null | undef
   return { errors, parsed, flat };
 }
 
-function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
+function saveCustomValues(objectType: CustomObjectType, ownerId: number, parsed: Map<number, string | null>) {
+  const store = CUSTOM_VALUE_STORES[objectType];
   for (const [fieldId, value] of parsed) {
-    const existing = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === fieldId);
+    const existing = store.rows().find((v) => v[store.fk] === ownerId && v.field_id === fieldId);
     if (existing) existing.value = value;
-    else db.project_custom_values.push({ id: nextId(), project_id: projectId, field_id: fieldId, value });
+    else store.rows().push({ id: nextId(), [store.fk]: ownerId, field_id: fieldId, value });
   }
 }
 
-function serializeCustomValues(projectId: number): Record<string, Row> {
+function serializeCustomValues(objectType: CustomObjectType, ownerId: number): Record<string, Row> {
+  const store = CUSTOM_VALUE_STORES[objectType];
   const out: Record<string, Row> = {};
-  for (const f of activeCustomFields()) {
-    const value = db.project_custom_values.find((v) => v.project_id === projectId && v.field_id === f.id)?.value ?? null;
+  for (const f of activeCustomFields(objectType)) {
+    const value = store.rows().find((v) => v[store.fk] === ownerId && v.field_id === f.id)?.value ?? null;
     const opt = f.field_type === "dropdown" && value ? valueById(Number(value)) : undefined;
     out[f.field_key] = { id: f.id, type: f.field_type, value, option_label: opt?.label ?? null, option_color: opt?.color ?? null };
   }
@@ -276,7 +285,7 @@ function serializeProject(p: Row, opts: { withTasks?: boolean } = {}) {
     days_in_status: Math.max(0, daysBetween(statusChanged, today())),
     open_task_count: open.length, task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
-    custom: serializeCustomValues(p.id),
+    custom: serializeCustomValues("project", p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
@@ -431,7 +440,8 @@ route("DELETE", "/api/picklist-values/:id", (m) => {
     db.wins.filter((w) => w.category_id === v.id).length +
     db.template_tasks.filter((t) => t.default_priority_id === v.id).length +
     // B1: dropdown selections stored in custom-value tables count as references too
-    db.project_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length;
+    db.project_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length +
+    db.task_custom_values.filter((cv) => dropdownFieldIds.has(cv.field_id) && cv.value === String(v.id)).length; // E9
   if (refs > 0) {
     v.archived = 1;
     return ok({ archived: true, message: `"${v.label}" is referenced by ${refs} record(s), so it was archived instead of deleted. Existing records keep displaying it; it no longer appears in dropdowns for new entries.` });
@@ -442,7 +452,11 @@ route("DELETE", "/api/picklist-values/:id", (m) => {
 
 // ---- dynamic custom project fields ----
 const CUSTOM_FIELD_TYPES = ["text", "number", "currency", "date", "dropdown", "checkbox"];
-const CUSTOM_FIELD_VIEWS = ["project_list", "project_header", "portfolio_card"];
+// E9: layout slots per object type
+const CUSTOM_FIELD_VIEWS: Record<string, string[]> = {
+  project: ["project_list", "project_header", "portfolio_card"],
+  task: ["task_list", "task_card"],
+};
 const OPTION_COLORS = ["#2E4E8F", "#12808A", "#8A6FB8", "#C99239", "#4E9468", "#B0632F", "#5C6B84", "#C2554E"];
 
 const customFieldOut = (f: Row) => ({
@@ -457,6 +471,8 @@ route("GET", "/api/custom-fields", () =>
 );
 route("POST", "/api/custom-fields", (_m, _q, b) => {
   const label = String(b.label ?? "").trim();
+  const objectType: CustomObjectType = b.object_type === "task" ? "task" : "project";
+  if (b.object_type && !(b.object_type in CUSTOM_FIELD_VIEWS)) return err(400, "object_type must be one of: project, task");
   if (!label) return err(400, "Field label is required");
   if (!CUSTOM_FIELD_TYPES.includes(b.field_type)) return err(400, `Field type must be one of: ${CUSTOM_FIELD_TYPES.join(", ")}`);
   const opts = (Array.isArray(b.options) ? b.options : []).map((o: unknown) => String(o).trim()).filter(Boolean);
@@ -471,7 +487,7 @@ route("POST", "/api/custom-fields", (_m, _q, b) => {
     let plName = label;
     if (db.picklists.some((l) => l.name === plName)) plName = `${plName} (Custom Field)`;
     picklistId = nextId();
-    db.picklists.push({ id: picklistId, name: plName, object_type: "project", is_system: 0 });
+    db.picklists.push({ id: picklistId, name: plName, object_type: objectType, is_system: 0 });
     opts.forEach((o: string, i: number) =>
       db.picklist_values.push({
         id: nextId(), picklist_id: picklistId, label: o, sort_order: i + 1,
@@ -481,12 +497,12 @@ route("POST", "/api/custom-fields", (_m, _q, b) => {
   }
   const maxSort = Math.max(0, ...db.custom_fields.map((f) => f.sort_order));
   const f: Row = {
-    id: nextId(), object_type: "project", label, field_key: key, field_type: b.field_type,
+    id: nextId(), object_type: objectType, label, field_key: key, field_type: b.field_type,
     picklist_id: picklistId, is_active: 1, sort_order: maxSort + 1, created_date: now(),
   };
   db.custom_fields.push(f);
-  db.field_requirements.push({ id: nextId(), object_type: "project", field_name: key, label, is_system: 0, required: 0, required_at: "creation" });
-  for (const view of CUSTOM_FIELD_VIEWS) {
+  db.field_requirements.push({ id: nextId(), object_type: objectType, field_name: key, label, is_system: 0, required: 0, required_at: "creation" });
+  for (const view of CUSTOM_FIELD_VIEWS[objectType]) {
     const max = Math.max(0, ...db.view_layout_fields.filter((x) => x.view_name === view).map((x) => x.display_order));
     db.view_layout_fields.push({ id: nextId(), view_name: view, field_key: key, label, display_order: max + 1, is_visible: 1, is_locked: 0 });
   }
@@ -499,7 +515,7 @@ route("PATCH", "/api/custom-fields/:id", (m, _q, b) => {
     const label = String(b.label).trim();
     if (!label) return err(400, "Field label is required");
     f.label = label;
-    for (const r of db.field_requirements) if (r.object_type === "project" && r.field_name === f.field_key) r.label = label;
+    for (const r of db.field_requirements) if (r.object_type === f.object_type && r.field_name === f.field_key) r.label = label;
     for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.label = label;
   }
   if (b.sort_order !== undefined) f.sort_order = b.sort_order;
@@ -512,15 +528,18 @@ route("PATCH", "/api/custom-fields/:id", (m, _q, b) => {
 route("DELETE", "/api/custom-fields/:id", (m) => {
   const f = db.custom_fields.find((x) => x.id === Number(m.id));
   if (!f) return err(404, "Custom field not found");
-  const refs = db.project_custom_values.filter((v) => v.field_id === f.id && v.value != null).length;
+  const isTask = f.object_type === "task";
+  const values = isTask ? db.task_custom_values : db.project_custom_values;
+  const refs = values.filter((v) => v.field_id === f.id && v.value != null).length;
   if (refs > 0) {
     f.is_active = 0;
     for (const v of db.view_layout_fields) if (v.field_key === f.field_key) v.is_visible = 0;
-    return ok({ deactivated: true, message: `"${f.label}" holds values on ${refs} project(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
+    return ok({ deactivated: true, message: `"${f.label}" holds values on ${refs} ${f.object_type}(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
   }
-  db.project_custom_values = db.project_custom_values.filter((v) => v.field_id !== f.id);
+  if (isTask) db.task_custom_values = db.task_custom_values.filter((v) => v.field_id !== f.id);
+  else db.project_custom_values = db.project_custom_values.filter((v) => v.field_id !== f.id);
   db.view_layout_fields = db.view_layout_fields.filter((v) => v.field_key !== f.field_key);
-  db.field_requirements = db.field_requirements.filter((r) => !(r.object_type === "project" && r.field_name === f.field_key));
+  db.field_requirements = db.field_requirements.filter((r) => !(r.object_type === f.object_type && r.field_name === f.field_key));
   db.custom_fields = db.custom_fields.filter((x) => x.id !== f.id);
   if (f.picklist_id) {
     db.picklist_values = db.picklist_values.filter((v) => v.picklist_id !== f.picklist_id);
@@ -668,7 +687,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const ap = Number(b.annualized_premium);
   if (b.annualized_premium == null || b.annualized_premium === "" || !Number.isFinite(ap) || ap < 0)
     return err(400, "Annualized Premium (AP) is required and must be a dollar amount");
-  const custom = validateCustomValues(b.custom);
+  const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return err(400, custom.errors.join("; "));
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
   if (reqErrs.length) return err(400, reqErrs.join("; "));
@@ -689,7 +708,7 @@ route("POST", "/api/projects", (_m, _q, b) => {
     closed_date: null, closed_by: null, close_reason_id: null, final_summary: null,
   };
   db.projects.push(p);
-  saveCustomValues(p.id, custom.parsed);
+  saveCustomValues("project", p.id, custom.parsed);
   generateTasksFromTemplate(p.id, b.template_id, b.assignment_date, Number(b.assignee_id));
   logActivity({ project_id: p.id, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
   return ok(serializeProject(p, { withTasks: true }), 201);
@@ -703,13 +722,13 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
     if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
     b.annualized_premium = n;
   }
-  const custom = "custom" in b ? validateCustomValues(b.custom) : null;
+  const custom = "custom" in b ? validateCustomValues("project", b.custom) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
 
   const oldAssignee = p.assignee_id;
   const oldAp = p.annualized_premium ?? null;
   for (const f of ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
-  if (custom) saveCustomValues(p.id, custom.parsed);
+  if (custom) saveCustomValues("project", p.id, custom.parsed);
 
   if ("annualized_premium" in b && b.annualized_premium !== oldAp) {
     logActivity({
@@ -815,7 +834,9 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
   if (!p) return err(404, "Project not found");
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   if (!b.name?.trim()) return err(400, "Task name is required");
-  const reqErrs = requirementErrors("task", ["creation", "always"], b);
+  const custom = validateCustomValues("task", b.custom); // E9
+  if (custom.errors.length) return err(400, custom.errors.join("; "));
+  const reqErrs = requirementErrors("task", ["creation", "always"], { ...b, ...custom.flat });
   if (reqErrs.length) return err(400, reqErrs.join("; "));
   const max = Math.max(0, ...db.project_tasks.filter((t) => t.project_id === p.id).map((t) => t.step_order));
   const t: Row = {
@@ -826,6 +847,7 @@ route("POST", "/api/projects/:id/tasks", (m, _q, b) => {
     notes: "", skip_reason: null, completed_date: null, completed_by: null,
   };
   db.project_tasks.push(t);
+  saveCustomValues("task", t.id, custom.parsed);
   logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "system", note: `added ad-hoc task "${t.name}"` });
   if (b.initial_note?.trim())
     logActivity({ project_id: p.id, project_task_id: t.id, user_id: b.user_id, kind: "note", note: b.initial_note.trim() });
@@ -881,9 +903,12 @@ route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const tplTask = t.template_task_id ? db.template_tasks.find((x) => x.id === t.template_task_id) : null;
+  const custom = "custom" in b ? validateCustomValues("task", b.custom) : null; // E9
+  if (custom?.errors.length) return err(400, custom.errors.join("; "));
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
   for (const f of editable) if (f in b) t[f] = b[f];
+  if (custom) saveCustomValues("task", t.id, custom.parsed);
   return ok(serializeTask(t));
 });
 /** E4: Delete replaces Skipped — unlink and preserve time logs & activities, never cascade. */
@@ -897,6 +922,7 @@ route("DELETE", "/api/tasks/:id", (m, q, b) => {
   for (const l of db.time_logs) if (l.project_task_id === t.id) { l.project_task_id = null; logCount++; }
   for (const a of db.activities) if (a.project_task_id === t.id) { a.project_task_id = null; actCount++; }
   db.task_activity_links = db.task_activity_links.filter((l) => l.project_task_id !== t.id);
+  db.task_custom_values = db.task_custom_values.filter((v) => v.task_id !== t.id); // E9
   db.project_tasks = db.project_tasks.filter((x) => x.id !== t.id);
   const kept: string[] = [];
   if (logCount) kept.push(`${logCount} time log(s) re-parented to the project`);
@@ -1347,7 +1373,7 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
   const defaultTpl = templates.find((t) => t.is_default) ?? templates[0];
   const active = activeStatusIds();
   const seen = new Set<string>();
-  const customCols: [Row, number][] = activeCustomFields()
+  const customCols: [Row, number][] = activeCustomFields("project")
     .map((f): [Row, number] => [f, col([normalizeHeader(f.label), f.field_key])])
     .filter(([, i]) => i >= 0);
 
@@ -1414,7 +1440,7 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
   const valid = rows.filter((r) => !r.errors.length && r.assignee_id && r.template_id);
   const statusNew = valueByMapsTo("Project Status", "new")!;
   const created: string[] = [];
-  const fieldIdByKey = new Map(activeCustomFields().map((f) => [f.field_key, f.id]));
+  const fieldIdByKey = new Map(activeCustomFields("project").map((f) => [f.field_key, f.id]));
   for (const r of valid) {
     const code = nextProjectCode();
     const pid = nextId();
@@ -1432,7 +1458,7 @@ route("POST", "/api/import/projects/commit", (_m, _q, b) => {
       const fid = fieldIdByKey.get(key);
       if (fid) parsed.set(fid, value);
     }
-    saveCustomValues(pid, parsed);
+    saveCustomValues("project", pid, parsed);
     generateTasksFromTemplate(pid, r.template_id, r.assignment_date, r.assignee_id ?? null);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created via CSV import` });
     created.push(code);
@@ -1458,7 +1484,7 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     let projects = db.projects.slice().sort((a, b) => (a.created_date < b.created_date ? -1 : 1)).map((p) => serializeProject(p));
     if (q.get("scope") === "active") projects = projects.filter((p) => !p.is_closed);
     if (q.get("scope") === "closed") projects = projects.filter((p) => p.is_closed);
-    const customFields = activeCustomFields();
+    const customFields = activeCustomFields("project");
     return {
       filename: "projects.csv",
       csv: toCsv(

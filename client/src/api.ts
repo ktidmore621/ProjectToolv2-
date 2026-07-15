@@ -170,6 +170,8 @@ export interface Task {
   activity_count: number;
   note_count: number;
   latest_note: { note: string; activity_date: string; user_name: string | null } | null;
+  /** E9: admin-defined task field values, keyed by field_key. */
+  custom?: Record<string, CustomValue>;
   // present on cross-project task rows
   project_code?: string;
   mcp_name?: string;

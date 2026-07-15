@@ -595,17 +595,18 @@ const FIELD_TYPES: { key: CustomFieldType; label: string; hint: string }[] = [
 ];
 
 /**
- * Admin-defined project fields. A new field immediately shows up on the
- * create/edit forms, the project detail header, list/Kanban layouts and
- * imports/exports — no code change. Dropdown options are a normal picklist
- * (editable under Picklists & Values); requiredness lives in Field
- * Requirements; per-view visibility in Card & View Layouts.
+ * Admin-defined fields for projects AND tasks (E9 — one engine, two object
+ * types). A new field immediately shows up on the matching create/edit forms,
+ * detail views, list/Kanban layouts and (for projects) imports/exports — no
+ * code change. Dropdown options are a normal picklist (editable under
+ * Picklists & Values); requiredness lives in Field Requirements; per-view
+ * visibility in Card & View Layouts.
  */
 function CustomFields() {
   const toast = useToast();
   const { refreshPicklists } = useConfig();
   const [fields, setFields] = useState<CustomField[] | null>(null);
-  const [form, setForm] = useState({ label: "", field_type: "text" as CustomFieldType, options: "" });
+  const [form, setForm] = useState({ label: "", field_type: "text" as CustomFieldType, options: "", object_type: "project" });
 
   const load = useCallback(() => { api.get<CustomField[]>("/api/custom-fields").then(setFields); }, []);
   useEffect(load, [load]);
@@ -616,10 +617,11 @@ function CustomFields() {
       await api.post("/api/custom-fields", {
         label: form.label,
         field_type: form.field_type,
+        object_type: form.object_type,
         options: form.field_type === "dropdown" ? form.options.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
       });
-      toast(`Added field "${form.label}" — it now appears on project forms, views and imports/exports.`, "success");
-      setForm({ label: "", field_type: "text", options: "" });
+      toast(`Added ${form.object_type} field "${form.label}" — it now appears on the matching forms and views.`, "success");
+      setForm({ label: "", field_type: "text", options: "", object_type: form.object_type });
       load();
       refreshPicklists(); // dropdown fields add a picklist
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
@@ -647,11 +649,12 @@ function CustomFields() {
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
       <Card className="p-4">
-        <h3 className="mb-1 text-sm font-semibold">Project fields</h3>
+        <h3 className="mb-1 text-sm font-semibold">Custom fields</h3>
         <p className="mb-3 text-xs text-muted">
-          New fields appear automatically on the create/edit forms, project details, list and Kanban layouts,
-          reporting exports and CSV import. Dropdown options are managed under <b>Picklists & Values</b>;
-          make a field required under <b>Field Requirements</b>; show/hide it per view under <b>Card & View Layouts</b>.
+          New fields appear automatically on the matching create/edit forms, detail views, list and Kanban
+          layouts — and for project fields, reporting exports and CSV import. Dropdown options are managed
+          under <b>Picklists & Values</b>; make a field required under <b>Field Requirements</b>; show/hide it
+          per view under <b>Card & View Layouts</b>.
         </p>
         {fields.length === 0 && <p className="py-6 text-center text-sm text-muted">No custom fields yet.</p>}
         <ul className="divide-y divide-hairline">
@@ -664,6 +667,7 @@ function CustomFields() {
                 aria-label={`Rename ${f.label}`}
               />
               <span className="rounded bg-canvas px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-muted">{typeLabel(f.field_type)}</span>
+              <span className={`rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${f.object_type === "task" ? "bg-accent-soft text-accent" : "bg-primary-soft text-primary"}`}>{f.object_type}</span>
               {f.field_type === "dropdown" && (
                 <span className="text-xs text-muted">{f.options.filter((o) => o.is_active).map((o) => o.label).join(" · ")}</span>
               )}
@@ -683,6 +687,13 @@ function CustomFields() {
       <Card className="h-fit p-4">
         <h3 className="mb-3 text-sm font-semibold">Add a field</h3>
         <form onSubmit={add} className="space-y-3">
+          <Field label="Applies to" hint={form.object_type === "task" ? "Shows on task create/edit forms, the task modal, and task list/Kanban layouts." : "Shows on project forms, details, layouts and imports/exports."}>
+            <select className={inputCls} value={form.object_type}
+              onChange={(e) => setForm({ ...form, object_type: e.target.value })}>
+              <option value="project">Projects</option>
+              <option value="task">Tasks</option>
+            </select>
+          </Field>
           <Field label="Field label"><input className={inputCls} required value={form.label}
             onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="e.g. Region" /></Field>
           <Field label="Type" hint={FIELD_TYPES.find((t) => t.key === form.field_type)?.hint}>

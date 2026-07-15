@@ -502,7 +502,9 @@ function AddTaskModal({ project, users, onClose, onAdded }: { project: Project; 
   const { activeValues } = useConfig();
   const { currentUser } = useSession();
   const toast = useToast();
+  const taskCustomFields = useCustomFields("task"); // E9
   const [form, setForm] = useState({ name: "", description: "", due_date: "", assigned_to: "", priority_id: "", required: false, initial_note: "" });
+  const [custom, setCustom] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   async function submit(e: FormEvent) {
@@ -513,6 +515,7 @@ function AddTaskModal({ project, users, onClose, onAdded }: { project: Project; 
         due_date: form.due_date || null,
         assigned_to: form.assigned_to ? Number(form.assigned_to) : null,
         priority_id: form.priority_id ? Number(form.priority_id) : null,
+        custom,
         user_id: currentUser?.id,
       });
       toast(`Added task "${form.name}"`, "success");
@@ -544,6 +547,12 @@ function AddTaskModal({ project, users, onClose, onAdded }: { project: Project; 
             Required for closure
           </label>
         </div>
+        {/* E9: admin-defined task fields appear here automatically */}
+        {taskCustomFields.length > 0 && (
+          <div className="grid grid-cols-2 gap-3">
+            <CustomFieldInputs fields={taskCustomFields} values={custom} onChange={(k, v) => setCustom((c) => ({ ...c, [k]: v }))} />
+          </div>
+        )}
         <Field label="Initial note (optional)" hint="Starts the task's note history — no separate step needed.">
           <input className={inputCls} value={form.initial_note} onChange={(e) => setForm({ ...form, initial_note: e.target.value })} placeholder="Context for whoever picks this up" />
         </Field>

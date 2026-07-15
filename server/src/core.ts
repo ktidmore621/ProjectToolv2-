@@ -115,7 +115,7 @@ export function parseCurrency(raw: unknown): number | null {
   return Number(String(raw).replace(/[$,\s]/g, ""));
 }
 
-// ---------- Dynamic (custom) project fields ----------
+// ---------- Dynamic (custom) fields — one engine for projects and tasks (E9) ----------
 
 export interface CustomField {
   id: number;
@@ -128,10 +128,22 @@ export interface CustomField {
   sort_order: number;
 }
 
-export function activeCustomFields(): CustomField[] {
+/**
+ * Where each object type stores its custom values. Adding a new object type
+ * here (plus its table in db.ts) is all the engine needs — validation,
+ * persistence, serialization and the B1 picklist-deletion check all read
+ * from this map.
+ */
+export const CUSTOM_VALUE_STORES = {
+  project: { table: "project_custom_values", fk: "project_id" },
+  task: { table: "task_custom_values", fk: "task_id" },
+} as const;
+export type CustomObjectType = keyof typeof CUSTOM_VALUE_STORES;
+
+export function activeCustomFields(objectType: CustomObjectType = "project"): CustomField[] {
   return db
-    .prepare("SELECT * FROM custom_fields WHERE object_type = 'project' AND is_active = 1 ORDER BY sort_order, id")
-    .all() as CustomField[];
+    .prepare("SELECT * FROM custom_fields WHERE object_type = ? AND is_active = 1 ORDER BY sort_order, id")
+    .all(objectType) as CustomField[];
 }
 
 /** Validate one raw value against its field definition → canonical stored text or an error. */
@@ -178,7 +190,10 @@ export function parseCustomValue(field: CustomField, raw: unknown): { ok: true; 
  * `flat` mirrors the parsed values keyed by field_key so field_requirements
  * checks can treat custom fields exactly like built-in ones.
  */
-export function validateCustomValues(bodyCustom: Record<string, unknown> | null | undefined): {
+export function validateCustomValues(
+  objectType: CustomObjectType,
+  bodyCustom: Record<string, unknown> | null | undefined
+): {
   errors: string[];
   parsed: Map<number, string | null>;
   flat: Record<string, string | null>;
@@ -186,7 +201,7 @@ export function validateCustomValues(bodyCustom: Record<string, unknown> | null 
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
-  for (const f of activeCustomFields()) {
+  for (const f of activeCustomFields(objectType)) {
     const raw = bodyCustom?.[f.field_key];
     const r = parseCustomValue(f, raw);
     if (r.ok) {
@@ -197,15 +212,13 @@ export function validateCustomValues(bodyCustom: Record<string, unknown> | null 
   return { errors, parsed, flat };
 }
 
-const upsertCustomValue = () =>
-  db.prepare(
-    `INSERT INTO project_custom_values (project_id, field_id, value) VALUES (?, ?, ?)
-     ON CONFLICT(project_id, field_id) DO UPDATE SET value = excluded.value`
+export function saveCustomValues(objectType: CustomObjectType, ownerId: number, parsed: Map<number, string | null>) {
+  const { table, fk } = CUSTOM_VALUE_STORES[objectType];
+  const ins = db.prepare(
+    `INSERT INTO ${table} (${fk}, field_id, value) VALUES (?, ?, ?)
+     ON CONFLICT(${fk}, field_id) DO UPDATE SET value = excluded.value`
   );
-
-export function saveCustomValues(projectId: number, parsed: Map<number, string | null>) {
-  const ins = upsertCustomValue();
-  for (const [fieldId, value] of parsed) ins.run(projectId, fieldId, value);
+  for (const [fieldId, value] of parsed) ins.run(ownerId, fieldId, value);
 }
 
 export interface CustomValueOut {
@@ -215,13 +228,14 @@ export interface CustomValueOut {
   option_color: string | null;
 }
 
-/** { field_key: {type, value, option_label, option_color} } for one project — what every view renders from. */
-export function serializeCustomValues(projectId: number): Record<string, CustomValueOut> {
-  const fields = activeCustomFields();
+/** { field_key: {type, value, option_label, option_color} } for one record — what every view renders from. */
+export function serializeCustomValues(objectType: CustomObjectType, ownerId: number): Record<string, CustomValueOut> {
+  const fields = activeCustomFields(objectType);
   if (!fields.length) return {};
+  const { table, fk } = CUSTOM_VALUE_STORES[objectType];
   const rows = db
-    .prepare("SELECT field_id, value FROM project_custom_values WHERE project_id = ?")
-    .all(projectId) as { field_id: number; value: string | null }[];
+    .prepare(`SELECT field_id, value FROM ${table} WHERE ${fk} = ?`)
+    .all(ownerId) as { field_id: number; value: string | null }[];
   const byField = new Map(rows.map((r) => [r.field_id, r.value]));
   const out: Record<string, CustomValueOut> = {};
   for (const f of fields) {
@@ -450,7 +464,7 @@ export function serializeProject(p: any, opts: { withTasks?: boolean } = {}) {
     open_task_count: openTasks.length,
     task_count: taskRows.length,
     next_due_task: nextDue ? { name: nextDue.name, due_date: nextDue.due_date } : null,
-    custom: serializeCustomValues(p.id),
+    custom: serializeCustomValues("project", p.id),
     tasks: opts.withTasks ? taskRows.map(serializeTask) : undefined,
   };
 }
@@ -481,6 +495,7 @@ export function serializeTask(t: any) {
     activity_count: (taskActivityCount.get(t.id) as { n: number }).n,
     note_count: (taskNoteCount.get(t.id) as { n: number }).n,
     latest_note: (taskLatestNote.get(t.id) as { note: string; activity_date: string; user_name: string | null } | undefined) ?? null,
+    custom: serializeCustomValues("task", t.id), // E9
   };
 }
 

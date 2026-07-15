@@ -210,6 +210,15 @@ CREATE TABLE IF NOT EXISTS project_custom_values (
   value TEXT,                                 -- canonical text: number/currency decimal, date ISO, checkbox '1'/'0', dropdown picklist_value id
   UNIQUE(project_id, field_id)
 );
+
+-- E9: task-level custom values — same engine as projects, second value table
+CREATE TABLE IF NOT EXISTS task_custom_values (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+  field_id INTEGER NOT NULL REFERENCES custom_fields(id) ON DELETE CASCADE,
+  value TEXT,
+  UNIQUE(task_id, field_id)
+);
 `);
 
 // ---- v2 upgrade migrations (safe no-ops on fresh databases) ----
@@ -303,6 +312,7 @@ CREATE INDEX IF NOT EXISTS idx_task_activity_links_task ON task_activity_links(p
 CREATE INDEX IF NOT EXISTS idx_task_activity_links_activity ON task_activity_links(activity_id);
 CREATE INDEX IF NOT EXISTS idx_wins_project ON wins(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_custom_values_project ON project_custom_values(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_custom_values_task ON task_custom_values(task_id);
 `);
 
 /** Config a v1-seeded database is missing. Fresh installs get all of this from seed.ts. */

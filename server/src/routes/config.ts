@@ -14,7 +14,17 @@ export const config = Router();
 // ---------- Dynamic (custom) project fields ----------
 
 const CUSTOM_FIELD_TYPES = ["text", "number", "currency", "date", "dropdown", "checkbox"];
-const CUSTOM_FIELD_VIEWS = ["project_list", "project_header", "portfolio_card"];
+// E9: layout slots a new field gets, per object type
+const CUSTOM_FIELD_VIEWS: Record<string, string[]> = {
+  project: ["project_list", "project_header", "portfolio_card"],
+  task: ["task_list", "task_card"],
+};
+const CUSTOM_FIELD_OBJECT_TYPES = Object.keys(CUSTOM_FIELD_VIEWS);
+/** Which table holds a field's values, by object type (E9). */
+const VALUE_TABLE: Record<string, { table: string; fk: string }> = {
+  project: { table: "project_custom_values", fk: "project_id" },
+  task: { table: "task_custom_values", fk: "task_id" },
+};
 const OPTION_COLORS = ["#2E4E8F", "#12808A", "#8A6FB8", "#C99239", "#4E9468", "#B0632F", "#5C6B84", "#C2554E"];
 
 function customFieldOut(f: any) {
@@ -31,6 +41,9 @@ config.get("/custom-fields", (_req, res) => {
 
 config.post("/custom-fields", (req, res) => {
   const { label, field_type, options } = req.body as { label?: string; field_type?: string; options?: string[] };
+  const objectType = (req.body.object_type as string) || "project";
+  if (!CUSTOM_FIELD_OBJECT_TYPES.includes(objectType))
+    return res.status(400).json({ error: `object_type must be one of: ${CUSTOM_FIELD_OBJECT_TYPES.join(", ")}` });
   if (!label?.trim()) return res.status(400).json({ error: "Field label is required" });
   if (!field_type || !CUSTOM_FIELD_TYPES.includes(field_type))
     return res.status(400).json({ error: `Field type must be one of: ${CUSTOM_FIELD_TYPES.join(", ")}` });
@@ -50,8 +63,8 @@ config.post("/custom-fields", (req, res) => {
       let plName = label.trim();
       if (db.prepare("SELECT id FROM picklists WHERE name = ?").get(plName)) plName = `${plName} (Custom Field)`;
       picklistId = db
-        .prepare("INSERT INTO picklists (name, object_type, is_system) VALUES (?, 'project', 0)")
-        .run(plName).lastInsertRowid as number;
+        .prepare("INSERT INTO picklists (name, object_type, is_system) VALUES (?, ?, 0)")
+        .run(plName, objectType).lastInsertRowid as number;
       opts.forEach((o, i) =>
         db.prepare(
           "INSERT INTO picklist_values (picklist_id, label, sort_order, color, is_active, is_default) VALUES (?, ?, ?, ?, 1, ?)"
@@ -60,15 +73,15 @@ config.post("/custom-fields", (req, res) => {
     }
     const maxSort = db.prepare("SELECT MAX(sort_order) AS m FROM custom_fields").get() as { m: number | null };
     const id = db
-      .prepare("INSERT INTO custom_fields (object_type, label, field_key, field_type, picklist_id, sort_order) VALUES ('project', ?, ?, ?, ?, ?)")
-      .run(label.trim(), key, field_type, picklistId, (maxSort.m ?? 0) + 1).lastInsertRowid as number;
+      .prepare("INSERT INTO custom_fields (object_type, label, field_key, field_type, picklist_id, sort_order) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(objectType, label.trim(), key, field_type, picklistId, (maxSort.m ?? 0) + 1).lastInsertRowid as number;
 
     // Requiredness is managed alongside built-in fields in Field Requirements
     db.prepare(
-      "INSERT INTO field_requirements (object_type, field_name, label, is_system, required, required_at) VALUES ('project', ?, ?, 0, 0, 'creation')"
-    ).run(key, label.trim());
+      "INSERT INTO field_requirements (object_type, field_name, label, is_system, required, required_at) VALUES (?, ?, ?, 0, 0, 'creation')"
+    ).run(objectType, key, label.trim());
     // …and visibility/order alongside built-in fields in Card & View Layouts
-    for (const view of CUSTOM_FIELD_VIEWS) {
+    for (const view of CUSTOM_FIELD_VIEWS[objectType]) {
       const max = db.prepare("SELECT MAX(display_order) AS m FROM view_layout_fields WHERE view_name = ?").get(view) as { m: number | null };
       db.prepare(
         "INSERT INTO view_layout_fields (view_name, field_key, label, display_order, is_visible, is_locked) VALUES (?, ?, ?, ?, 1, 0)"
@@ -87,7 +100,7 @@ config.patch("/custom-fields/:id", (req, res) => {
   if (label !== undefined) {
     if (!String(label).trim()) return res.status(400).json({ error: "Field label is required" });
     db.prepare("UPDATE custom_fields SET label = ? WHERE id = ?").run(String(label).trim(), f.id);
-    db.prepare("UPDATE field_requirements SET label = ? WHERE object_type = 'project' AND field_name = ?").run(String(label).trim(), f.field_key);
+    db.prepare("UPDATE field_requirements SET label = ? WHERE object_type = ? AND field_name = ?").run(String(label).trim(), f.object_type, f.field_key);
     db.prepare("UPDATE view_layout_fields SET label = ? WHERE field_key = ?").run(String(label).trim(), f.field_key);
   }
   if (sort_order !== undefined) db.prepare("UPDATE custom_fields SET sort_order = ? WHERE id = ?").run(sort_order, f.id);
@@ -103,16 +116,17 @@ config.patch("/custom-fields/:id", (req, res) => {
 config.delete("/custom-fields/:id", (req, res) => {
   const f = db.prepare("SELECT * FROM custom_fields WHERE id = ?").get(req.params.id) as any;
   if (!f) return res.status(404).json({ error: "Custom field not found" });
-  const refs = (db.prepare("SELECT COUNT(*) AS n FROM project_custom_values WHERE field_id = ? AND value IS NOT NULL").get(f.id) as any).n;
+  const store = VALUE_TABLE[f.object_type] ?? VALUE_TABLE.project;
+  const refs = (db.prepare(`SELECT COUNT(*) AS n FROM ${store.table} WHERE field_id = ? AND value IS NOT NULL`).get(f.id) as any).n;
   if (refs > 0) {
     db.prepare("UPDATE custom_fields SET is_active = 0 WHERE id = ?").run(f.id);
     db.prepare("UPDATE view_layout_fields SET is_visible = 0 WHERE field_key = ?").run(f.field_key);
-    return res.json({ deactivated: true, message: `"${f.label}" holds values on ${refs} project(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
+    return res.json({ deactivated: true, message: `"${f.label}" holds values on ${refs} ${f.object_type}(s) — deactivated instead of deleted. Reactivate it to bring the data back.` });
   }
   const remove = db.transaction(() => {
-    db.prepare("DELETE FROM project_custom_values WHERE field_id = ?").run(f.id);
+    db.prepare(`DELETE FROM ${store.table} WHERE field_id = ?`).run(f.id);
     db.prepare("DELETE FROM view_layout_fields WHERE field_key = ?").run(f.field_key);
-    db.prepare("DELETE FROM field_requirements WHERE object_type = 'project' AND field_name = ?").run(f.field_key);
+    db.prepare("DELETE FROM field_requirements WHERE object_type = ? AND field_name = ?").run(f.object_type, f.field_key);
     db.prepare("DELETE FROM custom_fields WHERE id = ?").run(f.id);
     if (f.picklist_id) {
       db.prepare("DELETE FROM picklist_values WHERE picklist_id = ?").run(f.picklist_id);
@@ -237,6 +251,7 @@ const VALUE_REF_COLUMNS: [table: string, columns: string[]][] = [
 ];
 const CUSTOM_VALUE_TABLES: [table: string, fkColumn: string][] = [
   ["project_custom_values", "project_id"],
+  ["task_custom_values", "task_id"], // E9
 ];
 
 export function referenceCount(valueId: number): number {

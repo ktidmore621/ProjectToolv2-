@@ -72,7 +72,7 @@ projects.post("/", (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
   const b = parsed.data;
 
-  const custom = validateCustomValues(b.custom);
+  const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
@@ -99,7 +99,7 @@ projects.post("/", (req, res) => {
       )
       .run(code, b.mcp_number, b.mcp_name, b.project_name?.trim() || null, b.assignee_id, b.annualized_premium, b.assignment_date, b.target_date ?? null, b.template_id, statusNew.id, b.risk_level_id ?? null)
       .lastInsertRowid as number;
-    saveCustomValues(pid, custom.parsed);
+    saveCustomValues("project", pid, custom.parsed);
     generateTasksFromTemplate(pid, b.template_id, b.assignment_date, b.assignee_id);
     logActivity({ project_id: pid, user_id: b.user_id, kind: "system", note: `Project ${code} created` });
     return pid;
@@ -120,7 +120,7 @@ projects.patch("/:id", (req, res) => {
       return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
     req.body.annualized_premium = n;
   }
-  const custom = "custom" in req.body ? validateCustomValues(req.body.custom) : null;
+  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
   const allowed = ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
@@ -132,7 +132,7 @@ projects.patch("/:id", (req, res) => {
   if (sets.length) {
     db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals, p.id);
   }
-  if (custom) saveCustomValues(p.id, custom.parsed);
+  if (custom) saveCustomValues("project", p.id, custom.parsed);
 
   // Audit-log the changes that matter to the project history
   if ("annualized_premium" in req.body && Number(req.body.annualized_premium) !== p.annualized_premium) {
@@ -277,7 +277,10 @@ projects.post("/:id/tasks", (req, res) => {
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are read-only" });
   const { name, description, due_date, assigned_to, priority_id, required, user_id, initial_note } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: "Task name is required" });
-  const reqErrs = requirementErrors("task", ["creation", "always"], req.body);
+  // E9: task custom fields validate exactly like project ones
+  const custom = validateCustomValues("task", req.body.custom);
+  if (custom.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
+  const reqErrs = requirementErrors("task", ["creation", "always"], { ...req.body, ...custom.flat });
   if (reqErrs.length) return res.status(400).json({ error: reqErrs.join("; ") });
 
   const maxOrder = db
@@ -291,6 +294,7 @@ projects.post("/:id/tasks", (req, res) => {
     )
     .run(p.id, name.trim(), description ?? "", (maxOrder.m ?? 0) + 1, due_date ?? null, assigned_to ?? null, notStarted.id, priority_id ?? null, required ? 1 : 0)
     .lastInsertRowid as number;
+  saveCustomValues("task", id, custom.parsed);
   logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "system", note: `added ad-hoc task "${name.trim()}"` });
   if (initial_note?.trim())
     logActivity({ project_id: p.id, project_task_id: id, user_id, kind: "note", note: initial_note.trim() });
@@ -352,12 +356,16 @@ tasks.patch("/:id", (req, res) => {
   const tplTask = t.template_task_id
     ? (db.prepare("SELECT can_edit FROM template_tasks WHERE id = ?").get(t.template_task_id) as any)
     : null;
+  // E9: task custom fields save through the same engine as project ones
+  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom) : null;
+  if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
   const sets: string[] = [];
   const vals: any[] = [];
   for (const f of editable) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
   if (sets.length) db.prepare(`UPDATE project_tasks SET ${sets.join(", ")} WHERE id = ?`).run(...vals, t.id);
+  if (custom) saveCustomValues("task", t.id, custom.parsed);
   res.json(serializeTask(db.prepare("SELECT * FROM project_tasks WHERE id = ?").get(t.id)));
 });
 

@@ -24,6 +24,7 @@ export interface DemoDB {
   view_layout_fields: Row[];
   custom_fields: Row[];
   project_custom_values: Row[];
+  task_custom_values: Row[];
   settings: Record<string, string>;
   seq: number;
 }
@@ -78,6 +79,8 @@ function load(): DemoDB | null {
       for (const w of loaded.wins) w.activity_id ??= null;
       // E4: Skipped is retired — archived, never assignable again
       for (const v of loaded.picklist_values) if (v.maps_to === "skipped") v.archived = 1;
+      // E9: task custom values store
+      loaded.task_custom_values ??= [];
       // E3: Project Name — column + layout slot right after MCP Name + field requirement
       for (const pr of loaded.projects) pr.project_name ??= null;
       for (const view of ["project_list", "portfolio_card", "project_header"]) {
@@ -110,6 +113,7 @@ function emptyDb(): DemoDB {
     users: [], picklists: [], picklist_values: [], workflow_templates: [], template_tasks: [],
     projects: [], project_tasks: [], time_logs: [], activities: [], task_activity_links: [], wins: [],
     field_requirements: [], view_layout_fields: [], custom_fields: [], project_custom_values: [],
+    task_custom_values: [],
     settings: {}, seq: 0,
   };
 }

@@ -55,13 +55,13 @@ export function renderCustomValue(v: CustomValue | undefined): React.ReactNode {
   }
 }
 
-/** All admin-defined project fields, active-only by default. */
-export function useCustomFields(activeOnly = true) {
+/** All admin-defined fields for one object type (E9: 'project' or 'task'), active-only by default. */
+export function useCustomFields(objectType: "project" | "task" = "project", activeOnly = true) {
   const [fields, setFields] = useState<CustomField[]>([]);
   useEffect(() => {
     api.get<CustomField[]>("/api/custom-fields").then(setFields).catch(() => setFields([]));
   }, []);
-  return activeOnly ? fields.filter((f) => f.is_active) : fields;
+  return fields.filter((f) => f.object_type === objectType && (!activeOnly || f.is_active));
 }
 
 /**
@@ -108,6 +108,7 @@ export function CustomFieldInputs({ fields, values, onChange }: {
 }
 
 export function renderTaskField(key: string, t: Task): React.ReactNode {
+  if (key.startsWith("cf_")) return renderCustomValue(t.custom?.[key]); // E9
   switch (key) {
     case "name":
       return (

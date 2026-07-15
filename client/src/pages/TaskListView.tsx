@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, fmtDate, Project, Task } from "../api";
+import { api, Project, Task } from "../api";
 import { ActivityDrawer } from "../components/ActivityDrawer";
-import { Card, Chip, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
+import { renderTaskField, useLayout } from "../components/fields";
+import { Card, EmptyState, inputCls, Mono, Skeleton } from "../components/ui";
 import { defaultAssigneeOf, useConfig, useSession } from "../state";
 
 /**
@@ -18,6 +19,19 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [drawerTask, setDrawerTask] = useState<Task | null>(null);
+  // E9: this view honors the configurable task_list layout (custom fields included);
+  // a fixed Project column is inserted after the task name since rows span projects.
+  const layoutColumns = useLayout("task_list");
+  const columns = useMemo(() => {
+    const cols: { field_key: string; label: string }[] = [];
+    const nameIdx = layoutColumns.findIndex((c) => c.field_key === "name");
+    layoutColumns.forEach((c, i) => {
+      cols.push({ field_key: c.field_key, label: c.label });
+      if (i === nameIdx) cols.push({ field_key: "__project", label: "Project" });
+    });
+    if (nameIdx < 0) cols.unshift({ field_key: "__project", label: "Project" });
+    return cols;
+  }, [layoutColumns]);
 
   // Quick-filter default from the user's Working As settings: applied once per
   // user (so clearing it sticks) and only when the URL doesn't already carry an
@@ -112,33 +126,39 @@ export function TaskListView({ toolbar }: { toolbar?: React.ReactNode }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-hairline text-left">
-                {["Task", "Project", "Status", "Assigned To", "Due Date", "Priority", "Activities"].map((h) => (
-                  <th key={h} className="px-3 py-2.5 text-xs font-semibold text-muted">{h}</th>
+                {columns.map((c) => (
+                  <th key={c.field_key} className="px-3 py-2.5 text-xs font-semibold text-muted">{c.label}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {tasks.map((t, i) => (
                 <tr key={t.id} className={`border-b border-hairline last:border-0 ${i % 2 ? "bg-rowalt" : ""} hover:bg-primary-soft/40`}>
-                  <td className="px-3 py-2">
-                    <Link to={`/projects/${t.project_id}`} className="font-medium hover:underline">{t.name}</Link>
-                    {t.latest_note && <div className="mt-0.5 line-clamp-1 max-w-md text-xs text-muted">{t.latest_note.note}</div>}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Link to={`/projects/${t.project_id}`} className="hover:underline">{t.mcp_name}</Link>
-                    {/* E3: Project Name renders immediately after MCP Name */}
-                    {t.project_name && <span className="ml-1.5 text-xs text-muted">{t.project_name}</span>}
-                    <span className="ml-1.5 text-xs text-muted"><Mono>{t.project_code}</Mono></span>
-                  </td>
-                  <td className="px-3 py-2"><Chip label={t.status_label} color={t.status_color} small /></td>
-                  <td className="px-3 py-2">{t.assigned_to_name ?? <span className="text-muted">—</span>}</td>
-                  <td className="px-3 py-2">
-                    <Mono className={t.due_date && t.due_date < today && !["complete", "skipped", "cancelled"].includes(t.status_key ?? "") ? "text-rag-red" : ""}>
-                      {fmtDate(t.due_date)}
-                    </Mono>
-                  </td>
-                  <td className="px-3 py-2">{t.priority_label ? <Chip label={t.priority_label} color={t.priority_color!} small /> : <span className="text-muted">—</span>}</td>
-                  <td className="px-3 py-2"><ActivityCountButton task={t} onOpen={() => setDrawerTask(t)} /></td>
+                  {columns.map((c) => (
+                    <td key={c.field_key} className="px-3 py-2">
+                      {c.field_key === "name" ? (
+                        <>
+                          <Link to={`/projects/${t.project_id}`} className="font-medium hover:underline">{t.name}</Link>
+                          {t.latest_note && <div className="mt-0.5 line-clamp-1 max-w-md text-xs text-muted">{t.latest_note.note}</div>}
+                        </>
+                      ) : c.field_key === "__project" ? (
+                        <>
+                          <Link to={`/projects/${t.project_id}`} className="hover:underline">{t.mcp_name}</Link>
+                          {/* E3: Project Name renders immediately after MCP Name */}
+                          {t.project_name && <span className="ml-1.5 text-xs text-muted">{t.project_name}</span>}
+                          <span className="ml-1.5 text-xs text-muted"><Mono>{t.project_code}</Mono></span>
+                        </>
+                      ) : c.field_key === "due_date" ? (
+                        <span className={t.due_date && t.due_date < today && !["complete", "skipped", "cancelled"].includes(t.status_key ?? "") ? "text-rag-red" : ""}>
+                          {renderTaskField("due_date", t)}
+                        </span>
+                      ) : c.field_key === "activity_count" ? (
+                        <ActivityCountButton task={t} onOpen={() => setDrawerTask(t)} />
+                      ) : (
+                        renderTaskField(c.field_key, t)
+                      )}
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Activity, api, ApiError, fmtDate, fmtHours, fmtTime, Project, Task, todayIso } from "../api";
 import { useConfig, useSession, useToast } from "../state";
 import { canEditActivity, EditActivityButton, EditActivityModal } from "./EditActivityModal";
+import { CustomFieldInputs, useCustomFields } from "./fields";
 import { ActivityTypeIcon, TrashIcon } from "./icons";
 import { Btn, Chip, Field, inputCls, Modal, Mono, tint } from "./ui";
 
@@ -26,6 +27,7 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged, onDelet
   const toast = useToast();
   const navigate = useNavigate();
 
+  const taskCustomFields = useCustomFields("task"); // E9
   const [form, setForm] = useState({
     name: task.name,
     description: task.description ?? "",
@@ -33,6 +35,9 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged, onDelet
     assigned_to: task.assigned_to ? String(task.assigned_to) : "",
     priority_id: task.priority_id ? String(task.priority_id) : "",
   });
+  const [custom, setCustom] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.entries(task.custom ?? {}).map(([k, v]) => [k, v.value ?? ""]))
+  );
   const [note, setNote] = useState("");
   const [notes, setNotes] = useState<Activity[] | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
@@ -109,6 +114,7 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged, onDelet
         due_date: form.due_date || null,
         assigned_to: form.assigned_to ? Number(form.assigned_to) : null,
         priority_id: form.priority_id ? Number(form.priority_id) : null,
+        custom, // E9
       });
       toast("Task updated.", "success");
       onChanged();
@@ -194,6 +200,12 @@ export function TaskModal({ task, project, readOnly, onClose, onChanged, onDelet
               {activeValues("Task Priority").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
           </Field>
+          {/* E9: admin-defined task fields, same engine as project fields */}
+          {taskCustomFields.length > 0 && (
+            <div className="grid grid-cols-2 gap-3">
+              <CustomFieldInputs fields={taskCustomFields} values={custom} onChange={(k, v) => setCustom((c) => ({ ...c, [k]: v }))} />
+            </div>
+          )}
           {!readOnly && <Btn kind="primary" type="submit">Save task</Btn>}
 
           {/* Linked activities (§6) */}
