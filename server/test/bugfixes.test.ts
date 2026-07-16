@@ -371,3 +371,19 @@ describe("Fix 10 — dashboard 'This Week' runs on Central Time and skips closed
     expect(dash.body.this_week.some((x: any) => x.kind === "activity" && x.id === act.body.id)).toBe(false);
   });
 });
+
+describe("Fix 11 — numeric custom fields sort numerically", () => {
+  it("sorts a number custom field by value, not by string", async () => {
+    const f = await request(app).post("/api/custom-fields").send({ label: "Headcount", field_type: "number" });
+    expect(f.status).toBe(201);
+    const key = f.body.field_key;
+    const p9 = await createProject(app, { custom: { [key]: "9" } });
+    const p10 = await createProject(app, { custom: { [key]: "10" } });
+    const p100 = await createProject(app, { custom: { [key]: "100" } });
+    const res = await request(app).get(`/api/projects?sort=${key}&dir=asc`);
+    const order = res.body
+      .filter((p: any) => [p9.id, p10.id, p100.id].includes(p.id))
+      .map((p: any) => p.custom[key].value);
+    expect(order).toEqual(["9", "10", "100"]); // pre-fix: ["10", "100", "9"]
+  });
+});

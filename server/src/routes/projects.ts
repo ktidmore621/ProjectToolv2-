@@ -2,9 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import {
-  CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
-  isIsoDate, logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
-  todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
+  CLOSED_KEYS, DONE_TASK_KEYS, activeCustomFields, closureProblems, fmtCurrency, generateTasksFromTemplate,
+  isClosedStatus, isIsoDate, logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject,
+  serializeTask, todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -68,7 +68,16 @@ projects.get("/", (req, res) => {
   // E11: sorting happens server-side so it covers the full result set
   if (sort && (PROJECT_SORT_KEYS.has(sort) || sort.startsWith("cf_"))) {
     const d = dir === "desc" ? -1 : 1;
-    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    // number/currency custom fields store canonical text — compare as numbers
+    // or "9" sorts after "10"; blanks group at the bottom ascending
+    const cf = sort.startsWith("cf_") ? activeCustomFields("project").find((f) => f.field_key === sort) : undefined;
+    const numericCf = cf && (cf.field_type === "number" || cf.field_type === "currency");
+    const keyOf = (p: any) => {
+      if (!sort.startsWith("cf_")) return p[sort] ?? "";
+      const v = p.custom?.[sort]?.value;
+      if (numericCf) { const n = Number(v); return v != null && Number.isFinite(n) ? n : Infinity * d; }
+      return v ?? "";
+    };
     out = [...out].sort((a, b) => {
       const av = keyOf(a), bv = keyOf(b);
       return (av < bv ? -1 : av > bv ? 1 : 0) * d;

@@ -708,7 +708,16 @@ route("GET", "/api/projects", (_m, q) => {
   const sort = q.get("sort");
   if (sort) {
     const d = q.get("dir") === "desc" ? -1 : 1;
-    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    // number/currency custom fields store canonical text — compare as numbers
+    // or "9" sorts after "10"; blanks group at the bottom ascending
+    const cf = sort.startsWith("cf_") ? activeCustomFields("project").find((f) => f.field_key === sort) : undefined;
+    const numericCf = cf && (cf.field_type === "number" || cf.field_type === "currency");
+    const keyOf = (p: any) => {
+      if (!sort.startsWith("cf_")) return p[sort] ?? "";
+      const v = p.custom?.[sort]?.value;
+      if (numericCf) { const n = Number(v); return v != null && Number.isFinite(n) ? n : Infinity * d; }
+      return v ?? "";
+    };
     out = out.slice().sort((a, b) => { const av = keyOf(a), bv = keyOf(b); return (av < bv ? -1 : av > bv ? 1 : 0) * d; });
   }
   return paginate(out, q) ?? ok(out);
