@@ -1,11 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { addDays, api, fmtHours, isoOf, Project, weekStart } from "../api";
+import { api, fmtHours, isoOf, Project } from "../api";
+import { Bucket, bucketMinutes, DateRangeBar, timecardExportUrl, useDateRange } from "../components/DateRange";
 import { Page } from "../components/Layout";
 import { Btn, Card, CsvLink, EmptyState, Field, inputCls, Modal, Mono, Skeleton } from "../components/ui";
 import { useConfig, useSession, useToast } from "../state";
-
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 interface CellTarget {
   project_id: number;
@@ -16,25 +15,23 @@ interface CellTarget {
   existing: any[];
 }
 
-/** My Timecard (§7.1): weekly grid, rows = project (tasks expandable), cells = hours. */
+/** My Timecard (§7.1): range grid (day/week/month columns), rows = project (tasks expandable), cells = hours. */
 export function Timecard() {
   const { currentUser } = useSession();
   const toast = useToast();
-  const [start, setStart] = useState(() => weekStart(new Date()));
+  const dateRange = useDateRange();
+  const { range, buckets, granularity } = dateRange;
   const [logs, setLogs] = useState<any[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [cell, setCell] = useState<CellTarget | null>(null);
   const [showLogForm, setShowLogForm] = useState(false);
 
-  const days = useMemo(() => [...Array(7)].map((_, i) => isoOf(addDays(start, i))), [start]);
-  const end = days[6];
-
   const load = useCallback(() => {
     if (!currentUser) return;
-    api.get(`/api/timelogs?user_id=${currentUser.id}&start=${days[0]}&end=${end}`).then(setLogs);
+    api.get(`/api/timelogs?user_id=${currentUser.id}&start=${range.start}&end=${range.end}`).then(setLogs);
     api.get<Project[]>("/api/projects").then(setProjects);
-  }, [currentUser, days, end]);
+  }, [currentUser, range.start, range.end]);
   useEffect(load, [load]);
 
   // rows: project → optional task sub-rows
@@ -56,7 +53,6 @@ export function Timecard() {
     });
   }, [logs]);
 
-  const minutesFor = (ls: any[], date: string) => ls.filter((l) => l.date === date).reduce((s, l) => s + l.total_minutes, 0);
   const grand = (logs ?? []).reduce((s, l) => s + l.total_minutes, 0);
 
   if (!currentUser)
@@ -76,18 +72,17 @@ export function Timecard() {
       title="My Timecard"
       actions={
         <>
-          <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface p-0.5">
-            <Btn small kind="ghost" onClick={() => setStart(addDays(start, -7))}>← Prev</Btn>
-            <Btn small kind="ghost" onClick={() => setStart(weekStart(new Date()))}>Today</Btn>
-            <Btn small kind="ghost" onClick={() => setStart(addDays(start, 7))}>Next →</Btn>
-          </div>
-          <CsvLink href={`/api/export/timelogs.csv?user_id=${currentUser.id}&start=${days[0]}&end=${end}`}>Export week</CsvLink>
+          <DateRangeBar ctrl={dateRange} />
+          <CsvLink href={timecardExportUrl(range, currentUser.id)}>Export</CsvLink>
           <Btn kind="primary" onClick={() => setShowLogForm(true)}>Log time</Btn>
         </>
       }
     >
       <p className="mb-3 text-sm text-muted">
-        Week of <Mono>{days[0]}</Mono> — click any cell to add or edit time.
+        <Mono>{range.start}</Mono> – <Mono>{range.end}</Mono>
+        {granularity === "day"
+          ? " — click any cell to add or edit time."
+          : ` — columns are ${granularity}s; switch to Week (or a short custom range) for day-level editing.`}
       </p>
       {!logs ? <Skeleton className="h-72" /> : (
         <Card className="overflow-x-auto">
@@ -96,9 +91,9 @@ export function Timecard() {
               <tr className="border-b border-hairline text-left">
                 {/* sticky first column (§10.4) */}
                 <th className="sticky left-0 z-10 bg-surface px-3 py-2.5 text-xs font-semibold text-muted">Project / Task</th>
-                {days.map((d, i) => (
-                  <th key={d} className="px-2 py-2.5 text-right text-xs font-semibold text-muted">
-                    {DAY_LABELS[i]} <Mono className="font-normal">{d.slice(8)}</Mono>
+                {buckets.map((b) => (
+                  <th key={b.key} className="px-2 py-2.5 text-right text-xs font-semibold text-muted">
+                    {b.label}{b.sub && <> <Mono className="font-normal">{b.sub}</Mono></>}
                   </th>
                 ))}
                 <th className="px-3 py-2.5 text-right text-xs font-semibold text-muted">Total</th>
@@ -106,20 +101,20 @@ export function Timecard() {
             </thead>
             <tbody>
               {rows.length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-10 text-center text-sm text-muted">No time logged this week. Click “Log time” to start.</td></tr>
+                <tr><td colSpan={buckets.length + 2} className="px-3 py-10 text-center text-sm text-muted">No time logged in this range. Click “Log time” to start.</td></tr>
               )}
               {rows.map((row, ri) => (
-                <RowGroup key={row.project_id} row={row} days={days} zebra={ri % 2 === 1}
+                <RowGroup key={row.project_id} row={row} buckets={buckets} zebra={ri % 2 === 1}
                   expanded={expanded.has(row.project_id)}
                   onToggle={() => setExpanded((s) => { const n = new Set(s); n.has(row.project_id) ? n.delete(row.project_id) : n.add(row.project_id); return n; })}
-                  minutesFor={minutesFor} onCell={openCell} />
+                  onCell={openCell} />
               ))}
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-hairline font-semibold">
-                <td className="sticky left-0 bg-surface px-3 py-2.5">Weekly total</td>
-                {days.map((d) => (
-                  <td key={d} className="px-2 py-2.5 text-right"><Mono>{fmtHours(minutesFor(logs, d)) || "—"}</Mono></td>
+                <td className="sticky left-0 bg-surface px-3 py-2.5">Total</td>
+                {buckets.map((b) => (
+                  <td key={b.key} className="px-2 py-2.5 text-right"><Mono>{fmtHours(bucketMinutes(logs, b)) || "—"}</Mono></td>
                 ))}
                 <td className="px-3 py-2.5 text-right"><Mono>{fmtHours(grand)}</Mono></td>
               </tr>
@@ -133,7 +128,7 @@ export function Timecard() {
   );
 }
 
-function RowGroup({ row, days, zebra, expanded, onToggle, minutesFor, onCell }: any) {
+function RowGroup({ row, buckets, zebra, expanded, onToggle, onCell }: any) {
   return (
     <>
       <tr className={`border-b border-hairline ${zebra ? "bg-rowalt" : ""}`}>
@@ -144,18 +139,21 @@ function RowGroup({ row, days, zebra, expanded, onToggle, minutesFor, onCell }: 
           <Link to={`/projects/${row.project_id}`} className="font-medium hover:underline">{row.name}</Link>
           <Mono className="ml-2 text-xs text-muted">{row.code}</Mono>
         </td>
-        {days.map((d: string) => {
-          const m = minutesFor(row.logs, d);
-          return (
-            <td key={d} className="px-1 py-1 text-right">
+        {buckets.map((b: Bucket) => {
+          const m = bucketMinutes(row.logs, b);
+          // add/edit works cell-by-cell only when a column is a single day
+          return b.start === b.end ? (
+            <td key={b.key} className="px-1 py-1 text-right">
               <button
-                onClick={() => onCell(row, null, d)}
+                onClick={() => onCell(row, null, b.start)}
                 className={`w-full rounded px-1.5 py-1 text-right font-mono text-[13px] transition-colors hover:bg-accent-soft focus-visible:bg-accent-soft ${m ? "" : "text-muted/40"}`}
-                aria-label={`${row.name} on ${d}: ${m ? fmtHours(m) : "no time"} — click to log`}
+                aria-label={`${row.name} on ${b.start}: ${m ? fmtHours(m) : "no time"} — click to log`}
               >
                 {m ? fmtHours(m) : "·"}
               </button>
             </td>
+          ) : (
+            <td key={b.key} className={`px-2 py-2 text-right font-mono text-[13px] ${m ? "" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>
           );
         })}
         <td className="px-3 py-2 text-right font-medium"><Mono>{fmtHours(row.logs.reduce((s: number, l: any) => s + l.total_minutes, 0))}</Mono></td>
@@ -163,15 +161,17 @@ function RowGroup({ row, days, zebra, expanded, onToggle, minutesFor, onCell }: 
       {expanded && row.tasks.map((t: any) => (
         <tr key={t.task_id ?? "project"} className="border-b border-hairline bg-canvas/40 text-xs">
           <td className="sticky left-0 z-10 bg-canvas/40 py-1.5 pl-10 pr-3 text-muted backdrop-blur">{t.name}</td>
-          {days.map((d: string) => {
-            const m = minutesFor(t.logs, d);
-            return (
-              <td key={d} className="px-1 py-0.5 text-right">
-                <button onClick={() => onCell(row, t, d)}
+          {buckets.map((b: Bucket) => {
+            const m = bucketMinutes(t.logs, b);
+            return b.start === b.end ? (
+              <td key={b.key} className="px-1 py-0.5 text-right">
+                <button onClick={() => onCell(row, t, b.start)}
                   className={`w-full rounded px-1.5 py-0.5 text-right font-mono transition-colors hover:bg-accent-soft ${m ? "text-ink" : "text-muted/40"}`}>
                   {m ? fmtHours(m) : "·"}
                 </button>
               </td>
+            ) : (
+              <td key={b.key} className={`px-2 py-1 text-right font-mono ${m ? "text-ink" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>
             );
           })}
           <td className="px-3 py-1 text-right text-muted"><Mono>{fmtHours(t.logs.reduce((s: number, l: any) => s + l.total_minutes, 0))}</Mono></td>

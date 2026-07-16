@@ -1,23 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { addDays, api, fmtHours, isoOf, weekStart } from "../api";
+import { api, fmtHours } from "../api";
+import { Bucket, bucketMinutes, DateRangeBar, timecardExportUrl, useDateRange } from "../components/DateRange";
 import { Page } from "../components/Layout";
-import { Btn, Card, CsvLink, inputCls, Mono, Skeleton } from "../components/ui";
+import { Card, CsvLink, Mono, Skeleton } from "../components/ui";
 
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-/** Team Timecard (§7.2): user-level weekly grid with project drill-down + activity-type rollup + export. */
+/** Team Timecard (§7.2): user-level range grid with project drill-down + activity-type rollup + export. */
 export function TeamTimecard() {
-  const [start, setStart] = useState(() => weekStart(new Date()));
+  const dateRange = useDateRange();
+  const { range, buckets } = dateRange;
   const [logs, setLogs] = useState<any[] | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [range, setRange] = useState({ start: "", end: "" });
-
-  const days = useMemo(() => [...Array(7)].map((_, i) => isoOf(addDays(start, i))), [start]);
-  const end = days[6];
 
   const load = useCallback(() => {
-    api.get(`/api/timelogs?start=${days[0]}&end=${end}`).then(setLogs);
-  }, [days, end]);
+    api.get(`/api/timelogs?start=${range.start}&end=${range.end}`).then(setLogs);
+  }, [range.start, range.end]);
   useEffect(load, [load]);
 
   const byUser = useMemo(() => {
@@ -38,7 +34,6 @@ export function TeamTimecard() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [logs]);
 
-  const minutesFor = (ls: any[], date: string) => ls.filter((l) => l.date === date).reduce((s, l) => s + l.total_minutes, 0);
   const grand = (logs ?? []).reduce((s, l) => s + l.total_minutes, 0);
   const maxAct = Math.max(1, ...byActivity.map(([, m]) => m));
 
@@ -47,16 +42,14 @@ export function TeamTimecard() {
       title="Team Timecard"
       actions={
         <>
-          <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface p-0.5">
-            <Btn small kind="ghost" onClick={() => setStart(addDays(start, -7))}>← Prev</Btn>
-            <Btn small kind="ghost" onClick={() => setStart(weekStart(new Date()))}>Today</Btn>
-            <Btn small kind="ghost" onClick={() => setStart(addDays(start, 7))}>Next →</Btn>
-          </div>
-          <CsvLink href={`/api/export/timelogs.csv?start=${days[0]}&end=${end}`}>Export week</CsvLink>
+          <DateRangeBar ctrl={dateRange} />
+          <CsvLink href={timecardExportUrl(range)}>Export</CsvLink>
         </>
       }
     >
-      <p className="mb-3 text-sm text-muted">Week of <Mono>{days[0]}</Mono> · all users · expand a row for per-project detail.</p>
+      <p className="mb-3 text-sm text-muted">
+        <Mono>{range.start}</Mono> – <Mono>{range.end}</Mono> · all users · expand a row for per-project detail.
+      </p>
       {!logs ? <Skeleton className="h-72" /> : (
         <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
           <Card className="overflow-x-auto">
@@ -64,12 +57,16 @@ export function TeamTimecard() {
               <thead>
                 <tr className="border-b border-hairline text-left">
                   <th className="sticky left-0 z-10 bg-surface px-3 py-2.5 text-xs font-semibold text-muted">User / Project</th>
-                  {days.map((d, i) => <th key={d} className="px-2 py-2.5 text-right text-xs font-semibold text-muted">{DAY_LABELS[i]} <Mono className="font-normal">{d.slice(8)}</Mono></th>)}
+                  {buckets.map((b) => (
+                    <th key={b.key} className="px-2 py-2.5 text-right text-xs font-semibold text-muted">
+                      {b.label}{b.sub && <> <Mono className="font-normal">{b.sub}</Mono></>}
+                    </th>
+                  ))}
                   <th className="px-3 py-2.5 text-right text-xs font-semibold text-muted">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {byUser.length === 0 && <tr><td colSpan={9} className="px-3 py-10 text-center text-sm text-muted">No time logged this week.</td></tr>}
+                {byUser.length === 0 && <tr><td colSpan={buckets.length + 2} className="px-3 py-10 text-center text-sm text-muted">No time logged in this range.</td></tr>}
                 {byUser.map(([uid, u], i) => {
                   const byProject = new Map<string, any[]>();
                   for (const l of u.logs) {
@@ -78,8 +75,8 @@ export function TeamTimecard() {
                     byProject.get(k)!.push(l);
                   }
                   return (
-                    <UserRows key={uid} uid={uid} u={u} byProject={byProject} days={days} zebra={i % 2 === 1}
-                      expanded={expanded.has(uid)} minutesFor={minutesFor}
+                    <UserRows key={uid} u={u} byProject={byProject} buckets={buckets} zebra={i % 2 === 1}
+                      expanded={expanded.has(uid)}
                       onToggle={() => setExpanded((s) => { const n = new Set(s); n.has(uid) ? n.delete(uid) : n.add(uid); return n; })} />
                   );
                 })}
@@ -87,7 +84,7 @@ export function TeamTimecard() {
               <tfoot>
                 <tr className="border-t-2 border-hairline font-semibold">
                   <td className="sticky left-0 bg-surface px-3 py-2.5">Team total</td>
-                  {days.map((d) => <td key={d} className="px-2 py-2.5 text-right"><Mono>{fmtHours(minutesFor(logs, d)) || "—"}</Mono></td>)}
+                  {buckets.map((b) => <td key={b.key} className="px-2 py-2.5 text-right"><Mono>{fmtHours(bucketMinutes(logs, b)) || "—"}</Mono></td>)}
                   <td className="px-3 py-2.5 text-right"><Mono>{fmtHours(grand)}</Mono></td>
                 </tr>
               </tfoot>
@@ -109,21 +106,8 @@ export function TeamTimecard() {
                     </div>
                   </li>
                 ))}
-                {byActivity.length === 0 && <li className="text-sm text-muted">No data this week.</li>}
+                {byActivity.length === 0 && <li className="text-sm text-muted">No data in this range.</li>}
               </ul>
-            </Card>
-            <Card className="p-4">
-              <h2 className="mb-2 text-sm font-semibold">Export custom range</h2>
-              <div className="flex items-center gap-2">
-                <input type="date" className={inputCls} value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} aria-label="Range start" />
-                <span className="text-muted">–</span>
-                <input type="date" className={inputCls} value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} aria-label="Range end" />
-              </div>
-              <div className="mt-3">
-                <CsvLink href={`/api/export/timelogs.csv?start=${range.start}&end=${range.end}`} disabled={!range.start || !range.end}>
-                  Export CSV
-                </CsvLink>
-              </div>
             </Card>
           </div>
         </div>
@@ -132,7 +116,7 @@ export function TeamTimecard() {
   );
 }
 
-function UserRows({ uid, u, byProject, days, zebra, expanded, onToggle, minutesFor }: any) {
+function UserRows({ u, byProject, buckets, zebra, expanded, onToggle }: any) {
   return (
     <>
       <tr className={`border-b border-hairline ${zebra ? "bg-rowalt" : ""}`}>
@@ -140,18 +124,18 @@ function UserRows({ uid, u, byProject, days, zebra, expanded, onToggle, minutesF
           <button onClick={onToggle} className="mr-1.5 text-muted hover:text-ink" aria-label={expanded ? "Collapse" : "Expand"}>{expanded ? "▾" : "▸"}</button>
           <span className="font-medium">{u.name}</span>
         </td>
-        {days.map((d: string) => {
-          const m = minutesFor(u.logs, d);
-          return <td key={d} className={`px-2 py-2 text-right font-mono text-[13px] ${m ? "" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>;
+        {buckets.map((b: Bucket) => {
+          const m = bucketMinutes(u.logs, b);
+          return <td key={b.key} className={`px-2 py-2 text-right font-mono text-[13px] ${m ? "" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>;
         })}
         <td className="px-3 py-2 text-right font-medium"><Mono>{fmtHours(u.logs.reduce((s: number, l: any) => s + l.total_minutes, 0))}</Mono></td>
       </tr>
       {expanded && [...byProject.entries()].map(([key, ls]: [string, any[]]) => (
         <tr key={key} className="border-b border-hairline bg-canvas/40 text-xs">
           <td className="sticky left-0 z-10 bg-canvas/40 py-1.5 pl-10 pr-3 text-muted">{key}</td>
-          {days.map((d: string) => {
-            const m = minutesFor(ls, d);
-            return <td key={d} className={`px-2 py-1 text-right font-mono ${m ? "text-ink" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>;
+          {buckets.map((b: Bucket) => {
+            const m = bucketMinutes(ls, b);
+            return <td key={b.key} className={`px-2 py-1 text-right font-mono ${m ? "text-ink" : "text-muted/40"}`}>{m ? fmtHours(m) : "·"}</td>;
           })}
           <td className="px-3 py-1 text-right text-muted"><Mono>{fmtHours(ls.reduce((s: number, l: any) => s + l.total_minutes, 0))}</Mono></td>
         </tr>
