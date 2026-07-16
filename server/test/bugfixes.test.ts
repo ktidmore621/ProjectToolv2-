@@ -151,3 +151,29 @@ describe("Fix 3 — status endpoints only accept values from their own picklist"
     expect(res.body.error).toMatch(/deactivated/);
   });
 });
+
+describe("Fix 4 — project edits can't blank always-required fields", () => {
+  it("rejects blanking MCP Name", async () => {
+    const p = await createProject(app);
+    const res = await request(app).patch(`/api/projects/${p.id}`).send({ mcp_name: "", user_id: uid() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("MCP Name is required");
+    const fresh = await request(app).get(`/api/projects/${p.id}`);
+    expect(fresh.body.mcp_name).toBe(p.mcp_name);
+  });
+
+  it("rejects nulling the assignee", async () => {
+    const p = await createProject(app);
+    const res = await request(app).patch(`/api/projects/${p.id}`).send({ assignee_id: null, user_id: uid() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Assignee is required");
+  });
+
+  it("still allows normal edits and clearing optional fields", async () => {
+    const p = await createProject(app);
+    const res = await request(app).patch(`/api/projects/${p.id}`)
+      .send({ mcp_name: "Renamed Co", project_name: null, target_date: null, user_id: uid() });
+    expect(res.status).toBe(200);
+    expect(res.body.mcp_name).toBe("Renamed Co");
+  });
+});

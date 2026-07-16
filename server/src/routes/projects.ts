@@ -154,6 +154,20 @@ projects.patch("/:id", (req, res) => {
   const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
+  // A field configured "always required" can't be blanked by an edit — the
+  // same rule the create form enforces. Only fields the request actually
+  // touches are judged; untouched fields keep their stored values.
+  const touched = new Set([...Object.keys(req.body), ...Object.keys(req.body.custom ?? {})]);
+  const provided: Record<string, any> = { ...req.body, ...(custom?.flat ?? {}) };
+  const alwaysErrs = (db.prepare(
+    `SELECT field_name, label FROM field_requirements
+     WHERE object_type = 'project' AND required = 1 AND required_at = 'always'`
+  ).all() as { field_name: string; label: string }[])
+    .filter((r) => touched.has(r.field_name))
+    .filter((r) => { const v = provided[r.field_name]; return v === undefined || v === null || (typeof v === "string" && !v.trim()); })
+    .map((r) => `${r.label} is required`);
+  if (alwaysErrs.length) return res.status(400).json({ error: alwaysErrs.join("; ") });
+
   const allowed = ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
   const sets: string[] = [];
   const vals: any[] = [];

@@ -744,6 +744,16 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
   const custom = "custom" in b ? validateCustomValues("project", b.custom) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
 
+  // A field configured "always required" can't be blanked by an edit — the
+  // same rule the create form enforces. Only touched fields are judged.
+  const touched = new Set([...Object.keys(b), ...Object.keys(b.custom ?? {})]);
+  const provided: Record<string, any> = { ...b, ...(custom?.flat ?? {}) };
+  const alwaysErrs = db.field_requirements
+    .filter((r) => r.object_type === "project" && r.required && r.required_at === "always" && touched.has(r.field_name))
+    .filter((r) => { const v = provided[r.field_name]; return v === undefined || v === null || (typeof v === "string" && !v.trim()); })
+    .map((r) => `${r.label} is required`);
+  if (alwaysErrs.length) return err(400, alwaysErrs.join("; "));
+
   const oldAssignee = p.assignee_id;
   const oldAp = p.annualized_premium ?? null;
   for (const f of ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"]) if (f in b) p[f] = b[f];
