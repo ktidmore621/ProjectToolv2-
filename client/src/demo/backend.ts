@@ -23,6 +23,15 @@ const clone = (x: any) => (x === undefined ? null : JSON.parse(JSON.stringify(x)
 // E6: date-based determinations run on Central Time via the IANA zone (DST-aware)
 const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" });
 const today = () => CENTRAL_DATE.format(new Date());
+const CENTRAL_DATETIME = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+/** Current Central wall-clock time as 'YYYY-MM-DD HH:MM' — comparable to user-entered activity timestamps. */
+const nowCentral = (): string => {
+  const p = Object.fromEntries(CENTRAL_DATETIME.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 const daysBetween = (a: string, b: string) =>
   Math.floor((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
 const settingNum = (key: string, fallback: number) => {
@@ -1369,7 +1378,8 @@ route("GET", "/api/dashboard", (_m, q) => {
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
   const wkStart = isoOfDate(monday);
   const wkEnd = addDaysIso(wkStart, 6);
-  const nowStamp = nowDate.toISOString().slice(0, 16).replace("T", " ");
+  // E6: activity timestamps are Central wall-clock values — compare against Central now
+  const nowStamp = nowCentral();
 
   const weekTasks = db.project_tasks.filter((x) => {
     if (!x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
@@ -1379,7 +1389,9 @@ route("GET", "/api/dashboard", (_m, q) => {
   });
   const weekActivities = db.activities.filter(
     (a) => a.kind === "activity" && a.activity_date >= wkStart + " 00:00:00" && a.activity_date <= wkEnd + " 23:59:59" &&
-      (!mine || mineProjectIds.has(a.project_id))
+      (!mine || mineProjectIds.has(a.project_id)) &&
+      // closed projects' activities are history, not upcoming work — same rule as weekTasks
+      !closedIds.includes(db.projects.find((p) => p.id === a.project_id)?.status_id ?? -1)
   );
   const thisWeek = [
     ...weekTasks.map((x) => {

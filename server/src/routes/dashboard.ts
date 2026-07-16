@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { CLOSED_KEYS, DONE_TASK_KEYS, serializeActivity, serializeProject, serializeWin, todayCentral, valuesFor } from "../core.js";
+import { CLOSED_KEYS, DONE_TASK_KEYS, nowCentral, serializeActivity, serializeProject, serializeWin, todayCentral, valuesFor } from "../core.js";
 
 export const dashboard = Router();
 
@@ -45,7 +45,6 @@ dashboard.get("/", (req, res) => {
   const blockedVal = valuesFor("Task Status").find((v) => v.maps_to === "blocked");
   const blockedId = blockedVal?.id;
   const closedStatusIds = valuesFor("Project Status").filter((v) => CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
-  const now = new Date();
   const today = todayCentral(); // E6: "today" is the Central calendar date
   const yesterday = addDaysIso(today, -1);
   const weekAgo = addDaysIso(today, -7);
@@ -97,7 +96,10 @@ dashboard.get("/", (req, res) => {
   // ---- "This Week" panel (§2.2): tasks due + logged/scheduled activities, Mon–Sun ----
   const wkStart = weekStartIso(today);
   const wkEnd = addDaysIso(wkStart, 6);
-  const nowStamp = now.toISOString().slice(0, 16).replace("T", " ");
+  // E6: activity timestamps are Central wall-clock values, so "has this
+  // happened yet" must compare against Central now — UTC flipped evening
+  // activities to done hours early.
+  const nowStamp = nowCentral();
 
   let weekTasks = db
     .prepare(
@@ -112,9 +114,10 @@ dashboard.get("/", (req, res) => {
     .prepare(
       `SELECT a.*, p.mcp_name, p.project_code FROM activities a
        JOIN projects p ON p.id = a.project_id
-       WHERE a.kind = 'activity' AND a.activity_date >= ? AND a.activity_date <= ?`
+       WHERE a.kind = 'activity' AND a.activity_date >= ? AND a.activity_date <= ?
+         AND p.status_id NOT IN (${closedStatusIds.map(() => "?").join(",")})`
     )
-    .all(wkStart + " 00:00:00", wkEnd + " 23:59:59") as any[];
+    .all(wkStart + " 00:00:00", wkEnd + " 23:59:59", ...closedStatusIds) as any[];
   if (mine) weekActivities = weekActivities.filter((a) => mineProjectIds.has(a.project_id));
 
   const thisWeek = [

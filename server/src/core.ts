@@ -60,6 +60,18 @@ export function todayCentral(): string {
   return CENTRAL_DATE.format(new Date());
 }
 
+const CENTRAL_DATETIME = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
+/** Current Central wall-clock time as 'YYYY-MM-DD HH:MM' — comparable to user-entered activity timestamps. */
+export function nowCentral(): string {
+  const p = Object.fromEntries(CENTRAL_DATETIME.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
 /** Strict calendar-date check: YYYY-MM-DD format AND a real day (rejects 2026-02-30). */
 export function isIsoDate(s: unknown): boolean {
   if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;

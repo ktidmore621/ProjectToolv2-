@@ -2,7 +2,7 @@
  * Regression tests for the bug-hunt fixes. Each describe block corresponds to
  * one fix commit and fails against the pre-fix code.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createProject, db, firstUserId, testApp, valueId } from "./helpers.js";
 
@@ -331,5 +331,43 @@ describe("Fix 9 — notes can't attach to another project's task", () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.task_name).toBe(p.tasks[0].name);
+  });
+});
+
+describe("Fix 10 — dashboard 'This Week' runs on Central Time and skips closed projects", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("does not mark an evening activity done before it happens (Central, not UTC)", async () => {
+    // 23:30 UTC on Thu 2026-07-16 is 18:30 in Chicago (CDT). An activity at
+    // 20:00 Central that evening has NOT happened yet — the old UTC comparison
+    // ("2026-07-16 23:30") called it done.
+    vi.useFakeTimers({ now: new Date("2026-07-16T23:30:00Z"), toFake: ["Date"] });
+    const p = await createProject(app);
+    const act = await request(app).post("/api/activities").send({
+      project_id: p.id, user_id: uid(), kind: "activity",
+      activity_type_id: valueId("Activity Type", "phone_call"),
+      activity_date: "2026-07-16", start_time: "20:00", end_time: "21:00",
+      note: "Evening call",
+    });
+    expect(act.status).toBe(201);
+    const dash = await request(app).get("/api/dashboard");
+    const entry = dash.body.this_week.find((x: any) => x.kind === "activity" && x.id === act.body.id);
+    expect(entry).toBeTruthy();
+    expect(entry.done).toBe(false);
+  });
+
+  it("excludes closed projects' activities from This Week, like tasks", async () => {
+    vi.useFakeTimers({ now: new Date("2026-07-16T12:00:00Z"), toFake: ["Date"] });
+    const p = await createProject(app);
+    const act = await request(app).post("/api/activities").send({
+      project_id: p.id, user_id: uid(), kind: "activity",
+      activity_type_id: valueId("Activity Type", "site_visit"),
+      activity_date: "2026-07-17", start_time: "09:00",
+      note: "Visit before closure",
+    });
+    expect(act.status).toBe(201);
+    await closeProject(p.id);
+    const dash = await request(app).get("/api/dashboard");
+    expect(dash.body.this_week.some((x: any) => x.kind === "activity" && x.id === act.body.id)).toBe(false);
   });
 });
