@@ -1255,11 +1255,17 @@ route("DELETE", "/api/wins/:id", (m, q, b) => {
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const userId = Number(q.get("user_id") ?? b?.user_id);
   if (!userId || !w.logged_by || userId !== w.logged_by) return err(403, "Only the author of a win can delete it");
-  db.activities = db.activities.filter((a) =>
-    w.activity_id
-      ? !(a.id === w.activity_id && a.kind === "system")
-      : !(a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"`)
-  );
+  if (w.activity_id) {
+    db.activities = db.activities.filter((a) => !(a.id === w.activity_id && a.kind === "system"));
+  } else {
+    // At most ONE matching note, and never one another win still points at —
+    // an unscoped text match could delete a twin win's note.
+    const referenced = new Set(db.wins.filter((x) => x.id !== w.id && x.activity_id != null).map((x) => x.activity_id));
+    const victim = db.activities
+      .filter((a) => a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"` && !referenced.has(a.id))
+      .sort((a, b2) => a.id - b2.id)[0];
+    if (victim) db.activities = db.activities.filter((a) => a.id !== victim.id);
+  }
   db.wins = db.wins.filter((x) => x.id !== w.id);
   logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
   return ok({ ok: true });

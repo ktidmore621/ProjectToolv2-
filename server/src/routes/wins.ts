@@ -92,8 +92,16 @@ wins.delete("/:id", (req, res) => {
     if (w.activity_id) {
       db.prepare("DELETE FROM activities WHERE id = ? AND kind = 'system'").run(w.activity_id);
     } else {
-      db.prepare("DELETE FROM activities WHERE project_id = ? AND kind = 'system' AND note = ?")
-        .run(w.project_id, `logged a win: "${w.description}"`);
+      // At most ONE matching note, and never one another win still points at —
+      // an unscoped text match could delete a twin win's note or trip its
+      // wins.activity_id foreign key and fail the whole delete.
+      db.prepare(
+        `DELETE FROM activities WHERE id = (
+           SELECT id FROM activities
+           WHERE project_id = ? AND kind = 'system' AND note = ?
+             AND id NOT IN (SELECT activity_id FROM wins WHERE activity_id IS NOT NULL)
+           ORDER BY id LIMIT 1)`
+      ).run(w.project_id, `logged a win: "${w.description}"`);
     }
     logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
   });

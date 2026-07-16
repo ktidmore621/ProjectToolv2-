@@ -198,3 +198,37 @@ describe("Fix 5 — partial custom-field updates keep omitted fields", () => {
     expect(clear.body.custom[k1].value).toBe("East");
   });
 });
+
+describe("Fix 6 — deleting a legacy win with a twin description", () => {
+  it("succeeds and leaves the other win's audit note intact", async () => {
+    const p = await createProject(app);
+    const w1 = await request(app).post("/api/wins").send({ project_id: p.id, description: "Saved money", user_id: uid(), occurred_date: "2026-01-11" });
+    const w2 = await request(app).post("/api/wins").send({ project_id: p.id, description: "Saved money", user_id: uid(), occurred_date: "2026-01-12" });
+    expect(w1.status).toBe(201);
+    expect(w2.status).toBe(201);
+    // simulate a legacy win created before wins.activity_id existed
+    db.prepare("UPDATE wins SET activity_id = NULL WHERE id = ?").run(w1.body.id);
+    db.prepare("DELETE FROM activities WHERE id = ?").run(w1.body.activity_id ?? -1);
+
+    const del = await request(app).delete(`/api/wins/${w1.body.id}?user_id=${uid()}`);
+    expect(del.status).toBe(200); // pre-fix: FK constraint -> 500, win undeletable
+    expect(db.prepare("SELECT id FROM wins WHERE id = ?").get(w1.body.id)).toBeUndefined();
+    // w2 and its linked audit note survive
+    expect(db.prepare("SELECT id FROM wins WHERE id = ?").get(w2.body.id)).toBeTruthy();
+    expect(db.prepare("SELECT id FROM activities WHERE id = ?").get(w2.body.activity_id)).toBeTruthy();
+  });
+
+  it("removes exactly one note when a legacy win still has its own", async () => {
+    const p = await createProject(app);
+    const w1 = await request(app).post("/api/wins").send({ project_id: p.id, description: "Twin note", user_id: uid(), occurred_date: "2026-01-11" });
+    const w2 = await request(app).post("/api/wins").send({ project_id: p.id, description: "Twin note", user_id: uid(), occurred_date: "2026-01-12" });
+    // both legacy: neither remembers its note id
+    db.prepare("UPDATE wins SET activity_id = NULL WHERE id IN (?, ?)").run(w1.body.id, w2.body.id);
+    const countNotes = () =>
+      (db.prepare("SELECT COUNT(*) AS n FROM activities WHERE project_id = ? AND kind = 'system' AND note = ?")
+        .get(p.id, 'logged a win: "Twin note"') as any).n;
+    expect(countNotes()).toBe(2);
+    await request(app).delete(`/api/wins/${w1.body.id}?user_id=${uid()}`);
+    expect(countNotes()).toBe(1); // pre-fix: both notes deleted
+  });
+});
