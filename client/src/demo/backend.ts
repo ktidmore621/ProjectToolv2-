@@ -23,6 +23,15 @@ const clone = (x: any) => (x === undefined ? null : JSON.parse(JSON.stringify(x)
 // E6: date-based determinations run on Central Time via the IANA zone (DST-aware)
 const CENTRAL_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" });
 const today = () => CENTRAL_DATE.format(new Date());
+const CENTRAL_DATETIME = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+/** Current Central wall-clock time as 'YYYY-MM-DD HH:MM' — comparable to user-entered activity timestamps. */
+const nowCentral = (): string => {
+  const p = Object.fromEntries(CENTRAL_DATETIME.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 const daysBetween = (a: string, b: string) =>
   Math.floor((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
 const settingNum = (key: string, fallback: number) => {
@@ -40,6 +49,13 @@ function nextProjectCode(): string {
   return `CAP-${String(next).padStart(4, "0")}`;
 }
 const isClosedStatus = (statusId: number) => CLOSED_KEYS.includes(valueById(statusId)?.maps_to ?? "");
+/** Strict calendar-date check: YYYY-MM-DD format AND a real day (rejects 2026-02-30). */
+const isIsoDate = (s: unknown): boolean => {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  // Round-trip guards against Date rolling 2026-02-30 over to March 2nd
+  const d = new Date(s + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
 const doneStatusIds = () => valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 const activeStatusIds = () => valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 
@@ -208,11 +224,13 @@ function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string |
   }
 }
 
-function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined) {
+/** `partial: true` (edits) only parses fields present in the map — a PATCH must not null out omitted fields. */
+function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined, opts: { partial?: boolean } = {}) {
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
   for (const f of activeCustomFields(objectType)) {
+    if (opts.partial && !(bodyCustom && f.field_key in bodyCustom)) continue;
     const r = parseCustomValue(f, bodyCustom?.[f.field_key]);
     if (r.ok) {
       parsed.set(f.id, r.value);
@@ -690,7 +708,16 @@ route("GET", "/api/projects", (_m, q) => {
   const sort = q.get("sort");
   if (sort) {
     const d = q.get("dir") === "desc" ? -1 : 1;
-    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    // number/currency custom fields store canonical text — compare as numbers
+    // or "9" sorts after "10"; blanks group at the bottom ascending
+    const cf = sort.startsWith("cf_") ? activeCustomFields("project").find((f) => f.field_key === sort) : undefined;
+    const numericCf = cf && (cf.field_type === "number" || cf.field_type === "currency");
+    const keyOf = (p: any) => {
+      if (!sort.startsWith("cf_")) return p[sort] ?? "";
+      const v = p.custom?.[sort]?.value;
+      if (numericCf) { const n = Number(v); return v != null && Number.isFinite(n) ? n : Infinity * d; }
+      return v ?? "";
+    };
     out = out.slice().sort((a, b) => { const av = keyOf(a), bv = keyOf(b); return (av < bv ? -1 : av > bv ? 1 : 0) * d; });
   }
   return paginate(out, q) ?? ok(out);
@@ -706,6 +733,10 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const ap = Number(b.annualized_premium);
   if (b.annualized_premium == null || b.annualized_premium === "" || !Number.isFinite(ap) || ap < 0)
     return err(400, "Annualized Premium (AP) is required and must be a dollar amount");
+  // Real calendar dates only — a malformed date would corrupt generated task
+  // due dates and the RAG date comparisons.
+  if (!isIsoDate(b.assignment_date)) return err(400, "Assignment Date must be a valid date (YYYY-MM-DD)");
+  if (b.target_date != null && !isIsoDate(b.target_date)) return err(400, "Estimated Completion Date must be a valid date (YYYY-MM-DD)");
   const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return err(400, custom.errors.join("; "));
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
@@ -741,8 +772,20 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
     if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
     b.annualized_premium = n;
   }
-  const custom = "custom" in b ? validateCustomValues("project", b.custom) : null;
+  if ("target_date" in b && b.target_date != null && !isIsoDate(b.target_date))
+    return err(400, "Estimated Completion Date must be a valid date (YYYY-MM-DD)");
+  const custom = "custom" in b ? validateCustomValues("project", b.custom, { partial: true }) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
+
+  // A field configured "always required" can't be blanked by an edit — the
+  // same rule the create form enforces. Only touched fields are judged.
+  const touched = new Set([...Object.keys(b), ...Object.keys(b.custom ?? {})]);
+  const provided: Record<string, any> = { ...b, ...(custom?.flat ?? {}) };
+  const alwaysErrs = db.field_requirements
+    .filter((r) => r.object_type === "project" && r.required && r.required_at === "always" && touched.has(r.field_name))
+    .filter((r) => { const v = provided[r.field_name]; return v === undefined || v === null || (typeof v === "string" && !v.trim()); })
+    .map((r) => `${r.label} is required`);
+  if (alwaysErrs.length) return err(400, alwaysErrs.join("; "));
 
   const oldAssignee = p.assignee_id;
   const oldAp = p.annualized_premium ?? null;
@@ -778,9 +821,13 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
 route("POST", "/api/projects/:id/status", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
-  const target = valueById(b.status_id);
+  // Only values from THIS picklist qualify — an id from another picklist would
+  // corrupt board columns and the one-active-project-per-MCP guard.
+  const target = valuesFor("Project Status").find((v) => v.id === b.status_id);
   if (!target) return err(400, "Unknown status");
   if (target.archived) return err(400, `"${target.label}" is archived and can no longer be assigned`);
+  if (!target.is_active && target.id !== p.status_id)
+    return err(400, `"${target.label}" is deactivated and can no longer be assigned`);
   if (isClosedStatus(p.status_id))
     return err(400, "Closed projects are never reopened (§2.2). Create a new project for this MCP instead.");
   if (target.maps_to === "closed") {
@@ -923,7 +970,7 @@ route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const tplTask = t.template_task_id ? db.template_tasks.find((x) => x.id === t.template_task_id) : null;
-  const custom = "custom" in b ? validateCustomValues("task", b.custom) : null; // E9
+  const custom = "custom" in b ? validateCustomValues("task", b.custom, { partial: true }) : null; // E9
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
@@ -958,11 +1005,15 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   if (!t) return err(404, "Task not found");
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
-  const target = valueById(b.status_id);
+  // Only Task Status values qualify — an id from another picklist would make
+  // the task invisible to done/blocked logic and closure checks.
+  const target = valuesFor("Task Status").find((v) => v.id === b.status_id);
   if (!target) return err(400, "Unknown status");
   // E4: archived statuses (Skipped) can't be newly assigned
   if (target.archived && target.id !== t.status_id)
     return err(400, `"${target.label}" is archived and can no longer be assigned. Delete the task instead.`);
+  if (!target.is_active && target.id !== t.status_id)
+    return err(400, `"${target.label}" is deactivated and can no longer be assigned`);
   const old = valueById(t.status_id);
 
   if (target.maps_to === "skipped" && t.required && !b.skip_reason?.trim())
@@ -993,6 +1044,18 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
 });
 
 // ---- time logs ----
+/** Shared POST/PATCH validation: whole non-negative duration, ISO date, task in the same project. */
+function timeLogProblem(l: { date: unknown; hours: number; minutes: number; project_id: number; project_task_id: unknown }): string | null {
+  if (!Number.isInteger(l.hours) || !Number.isInteger(l.minutes) || l.hours < 0 || l.minutes < 0 || l.minutes > 59 || l.hours + l.minutes === 0)
+    return "Enter a positive duration (minutes 0–59)";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(l.date))) return "Date must be YYYY-MM-DD";
+  if (l.project_task_id != null) {
+    const t = db.project_tasks.find((x) => x.id === Number(l.project_task_id));
+    if (!t) return "Task not found";
+    if (t.project_id !== l.project_id) return "Task must belong to the same project as the time entry";
+  }
+  return null;
+}
 route("GET", "/api/timelogs", (_m, q) => {
   let out = db.time_logs.slice();
   if (q.get("user_id")) out = out.filter((l) => l.user_id === Number(q.get("user_id")));
@@ -1007,8 +1070,12 @@ route("GET", "/api/timelogs", (_m, q) => {
 route("POST", "/api/timelogs", (_m, _q, b) => {
   if (!b.project_id || !b.user_id || !b.date) return err(400, "Project, user and date are required");
   const h = Number(b.hours ?? 0), min = Number(b.minutes ?? 0);
-  if (h < 0 || min < 0 || min > 59 || h + min === 0) return err(400, "Enter a positive duration (minutes 0–59)");
-  if (!db.projects.some((p) => p.id === b.project_id)) return err(404, "Project not found");
+  const p = db.projects.find((x) => x.id === b.project_id);
+  if (!p) return err(404, "Project not found");
+  const problem = timeLogProblem({ date: b.date, hours: h, minutes: min, project_id: p.id, project_task_id: b.project_task_id ?? null });
+  if (problem) return err(400, problem);
+  // Closed projects are permanent historical records — their timecards included
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
   const l: Row = {
     id: nextId(), project_id: b.project_id, project_task_id: b.project_task_id ?? null,
     user_id: b.user_id, date: b.date, hours: h, minutes: min,
@@ -1020,11 +1087,30 @@ route("POST", "/api/timelogs", (_m, _q, b) => {
 route("PATCH", "/api/timelogs/:id", (m, _q, b) => {
   const l = db.time_logs.find((x) => x.id === Number(m.id));
   if (!l) return err(404, "Time entry not found");
-  for (const f of ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"]) if (f in b) l[f] = b[f];
+  // Author-only, like notes and wins — a time entry is the author's record
+  const editorId = Number(b.user_id);
+  if (!editorId || editorId !== l.user_id) return err(403, "Only the author can edit this time entry");
+  const p = db.projects.find((x) => x.id === l.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
+  const fields = ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"];
+  // Validate the merged record with the same rules as POST
+  const next = { ...l, ...Object.fromEntries(fields.filter((f) => f in b).map((f) => [f, b[f]])) };
+  const problem = timeLogProblem({
+    date: next.date, hours: Number(next.hours), minutes: Number(next.minutes),
+    project_id: l.project_id, project_task_id: next.project_task_id ?? null,
+  });
+  if (problem) return err(400, problem);
+  for (const f of fields) if (f in b) l[f] = b[f];
   return ok(serializeLog(l));
 });
-route("DELETE", "/api/timelogs/:id", (m) => {
-  db.time_logs = db.time_logs.filter((x) => x.id !== Number(m.id));
+route("DELETE", "/api/timelogs/:id", (m, q, b) => {
+  const l = db.time_logs.find((x) => x.id === Number(m.id));
+  if (!l) return err(404, "Time entry not found");
+  const userId = Number(q.get("user_id") ?? b?.user_id);
+  if (!userId || userId !== l.user_id) return err(403, "Only the author can delete this time entry");
+  const p = db.projects.find((x) => x.id === l.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
+  db.time_logs = db.time_logs.filter((x) => x.id !== l.id);
   return ok({ ok: true });
 });
 
@@ -1067,6 +1153,12 @@ route("POST", "/api/activities", (_m, _q, b) => {
     const t = db.project_tasks.find((x) => x.id === tid);
     if (!t) return err(400, `Linked task ${tid} not found`);
     if (t.project_id !== Number(b.project_id)) return err(400, "Linked tasks must belong to the same project");
+  }
+  // The v1 single-task attachment gets the same membership check as task_ids
+  if (b.project_task_id != null) {
+    const t = db.project_tasks.find((x) => x.id === Number(b.project_task_id));
+    if (!t) return err(400, "Task not found");
+    if (t.project_id !== Number(b.project_id)) return err(400, "The task must belong to the same project as the note");
   }
 
   const a = logActivity({
@@ -1200,11 +1292,17 @@ route("DELETE", "/api/wins/:id", (m, q, b) => {
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const userId = Number(q.get("user_id") ?? b?.user_id);
   if (!userId || !w.logged_by || userId !== w.logged_by) return err(403, "Only the author of a win can delete it");
-  db.activities = db.activities.filter((a) =>
-    w.activity_id
-      ? !(a.id === w.activity_id && a.kind === "system")
-      : !(a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"`)
-  );
+  if (w.activity_id) {
+    db.activities = db.activities.filter((a) => !(a.id === w.activity_id && a.kind === "system"));
+  } else {
+    // At most ONE matching note, and never one another win still points at —
+    // an unscoped text match could delete a twin win's note.
+    const referenced = new Set(db.wins.filter((x) => x.id !== w.id && x.activity_id != null).map((x) => x.activity_id));
+    const victim = db.activities
+      .filter((a) => a.project_id === w.project_id && a.kind === "system" && a.note === `logged a win: "${w.description}"` && !referenced.has(a.id))
+      .sort((a, b2) => a.id - b2.id)[0];
+    if (victim) db.activities = db.activities.filter((a) => a.id !== victim.id);
+  }
   db.wins = db.wins.filter((x) => x.id !== w.id);
   logActivity({ project_id: w.project_id, user_id: userId, kind: "system", note: `deleted a win: "${w.description}"` });
   return ok({ ok: true });
@@ -1289,7 +1387,8 @@ route("GET", "/api/dashboard", (_m, q) => {
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
   const wkStart = isoOfDate(monday);
   const wkEnd = addDaysIso(wkStart, 6);
-  const nowStamp = nowDate.toISOString().slice(0, 16).replace("T", " ");
+  // E6: activity timestamps are Central wall-clock values — compare against Central now
+  const nowStamp = nowCentral();
 
   const weekTasks = db.project_tasks.filter((x) => {
     if (!x.due_date || x.due_date < wkStart || x.due_date > wkEnd) return false;
@@ -1299,7 +1398,9 @@ route("GET", "/api/dashboard", (_m, q) => {
   });
   const weekActivities = db.activities.filter(
     (a) => a.kind === "activity" && a.activity_date >= wkStart + " 00:00:00" && a.activity_date <= wkEnd + " 23:59:59" &&
-      (!mine || mineProjectIds.has(a.project_id))
+      (!mine || mineProjectIds.has(a.project_id)) &&
+      // closed projects' activities are history, not upcoming work — same rule as weekTasks
+      !closedIds.includes(db.projects.find((p) => p.id === a.project_id)?.status_id ?? -1)
   );
   const thisWeek = [
     ...weekTasks.map((x) => {
@@ -1443,11 +1544,33 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       const tpl = templates.find((t) => t.name.toLowerCase() === row.template.toLowerCase());
       if (!tpl) row.errors.push(`Unknown template "${row.template}"`);
       else row.template_id = tpl.id;
-    } else row.template_id = defaultTpl?.id;
+    } else {
+      row.template_id = defaultTpl?.id;
+      // Without this, preview called the row "Ready" and commit silently skipped it
+      if (!row.template_id) row.errors.push("No active workflow template available — create or activate one first");
+    }
     for (const [f, i] of customCols) {
       const parsed = parseCustomValue(f, r[i]);
       if (parsed.ok) row.custom[f.field_key] = parsed.value;
       else row.errors.push(parsed.error);
+    }
+    // Imported projects obey the same admin-configured requirement rules as the create form
+    const provided: Record<string, unknown> = {
+      project_code: "auto",
+      mcp_number: row.mcp_number, mcp_name: row.mcp_name, project_name: row.project_name,
+      // raw-cell fallback: a provided-but-invalid value is already flagged above
+      assignee_id: row.assignee_id ?? (row.assignee || undefined),
+      annualized_premium: row.annualized_premium ?? ((iAp >= 0 ? (r[iAp] ?? "").trim() : "") || undefined),
+      assignment_date: row.assignment_date, template_id: row.template_id,
+      ...row.custom,
+    };
+    for (const rule of db.field_requirements) {
+      if (rule.object_type !== "project" || !rule.required || !["creation", "always"].includes(rule.required_at)) continue;
+      const v = provided[rule.field_name];
+      if (v === undefined || v === null || (typeof v === "string" && !v.trim())) {
+        const msg = `${rule.label} is required`;
+        if (!row.errors.includes(msg)) row.errors.push(msg);
+      }
     }
     return row;
   });

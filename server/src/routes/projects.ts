@@ -2,9 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import {
-  CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
-  logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
-  todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
+  CLOSED_KEYS, DONE_TASK_KEYS, activeCustomFields, closureProblems, fmtCurrency, generateTasksFromTemplate,
+  isClosedStatus, isIsoDate, logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject,
+  serializeTask, todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
 export const projects = Router();
@@ -68,7 +68,16 @@ projects.get("/", (req, res) => {
   // E11: sorting happens server-side so it covers the full result set
   if (sort && (PROJECT_SORT_KEYS.has(sort) || sort.startsWith("cf_"))) {
     const d = dir === "desc" ? -1 : 1;
-    const keyOf = (p: any) => (sort.startsWith("cf_") ? p.custom?.[sort]?.value ?? "" : p[sort] ?? "");
+    // number/currency custom fields store canonical text — compare as numbers
+    // or "9" sorts after "10"; blanks group at the bottom ascending
+    const cf = sort.startsWith("cf_") ? activeCustomFields("project").find((f) => f.field_key === sort) : undefined;
+    const numericCf = cf && (cf.field_type === "number" || cf.field_type === "currency");
+    const keyOf = (p: any) => {
+      if (!sort.startsWith("cf_")) return p[sort] ?? "";
+      const v = p.custom?.[sort]?.value;
+      if (numericCf) { const n = Number(v); return v != null && Number.isFinite(n) ? n : Infinity * d; }
+      return v ?? "";
+    };
     out = [...out].sort((a, b) => {
       const av = keyOf(a), bv = keyOf(b);
       return (av < bv ? -1 : av > bv ? 1 : 0) * d;
@@ -90,8 +99,10 @@ const createSchema = z.object({
   project_name: z.string().nullish(), // E3: optional at creation
   assignee_id: z.number(),
   annualized_premium: z.number({ required_error: "Annualized Premium (AP) is required", invalid_type_error: "Annualized Premium (AP) must be a dollar amount" }).nonnegative("Annualized Premium (AP) must be a dollar amount"),
-  assignment_date: z.string().min(1),
-  target_date: z.string().nullish(),
+  // Real calendar dates only — a malformed date used to crash task generation
+  // mid-transaction and silently distort the RAG date comparisons.
+  assignment_date: z.string().refine(isIsoDate, "Assignment Date must be a valid date (YYYY-MM-DD)"),
+  target_date: z.string().nullish().refine((v) => v == null || isIsoDate(v), "Estimated Completion Date must be a valid date (YYYY-MM-DD)"),
   risk_level_id: z.number().nullish(),
   template_id: z.number(),
   custom: z.record(z.any()).nullish(), // { field_key: raw value } for admin-defined fields
@@ -151,8 +162,24 @@ projects.patch("/:id", (req, res) => {
       return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
     req.body.annualized_premium = n;
   }
-  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom) : null;
+  if ("target_date" in req.body && req.body.target_date != null && !isIsoDate(req.body.target_date))
+    return res.status(400).json({ error: "Estimated Completion Date must be a valid date (YYYY-MM-DD)" });
+  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom, { partial: true }) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
+
+  // A field configured "always required" can't be blanked by an edit — the
+  // same rule the create form enforces. Only fields the request actually
+  // touches are judged; untouched fields keep their stored values.
+  const touched = new Set([...Object.keys(req.body), ...Object.keys(req.body.custom ?? {})]);
+  const provided: Record<string, any> = { ...req.body, ...(custom?.flat ?? {}) };
+  const alwaysErrs = (db.prepare(
+    `SELECT field_name, label FROM field_requirements
+     WHERE object_type = 'project' AND required = 1 AND required_at = 'always'`
+  ).all() as { field_name: string; label: string }[])
+    .filter((r) => touched.has(r.field_name))
+    .filter((r) => { const v = provided[r.field_name]; return v === undefined || v === null || (typeof v === "string" && !v.trim()); })
+    .map((r) => `${r.label} is required`);
+  if (alwaysErrs.length) return res.status(400).json({ error: alwaysErrs.join("; ") });
 
   const allowed = ["mcp_name", "project_name", "assignee_id", "annualized_premium", "target_date", "risk_level_id"] as const;
   const sets: string[] = [];
@@ -205,10 +232,14 @@ projects.post("/:id/status", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   const { status_id, user_id } = req.body as { status_id: number; user_id: number };
-  const target = valueById(status_id);
+  // Only values from THIS picklist qualify — an id from another picklist would
+  // corrupt board columns and the one-active-project-per-MCP guard.
+  const target = valuesFor("Project Status").find((v) => v.id === status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
   if ((target as any).archived)
     return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned` });
+  if (!target.is_active && target.id !== p.status_id)
+    return res.status(400).json({ error: `"${target.label}" is deactivated and can no longer be assigned` });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are never reopened (§2.2). Create a new project for this MCP instead." });
 
   if (target.maps_to === "closed") {
@@ -390,7 +421,7 @@ tasks.patch("/:id", (req, res) => {
     ? (db.prepare("SELECT can_edit FROM template_tasks WHERE id = ?").get(t.template_task_id) as any)
     : null;
   // E9: task custom fields save through the same engine as project ones
-  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom) : null;
+  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom, { partial: true }) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");
@@ -448,12 +479,16 @@ tasks.post("/:id/status", (req, res) => {
   const { status_id, user_id, skip_reason } = req.body as {
     status_id: number; user_id: number; skip_reason?: string;
   };
-  const target = valueById(status_id);
+  // Only Task Status values qualify — an id from another picklist would make
+  // the task invisible to done/blocked logic and closure checks.
+  const target = valuesFor("Task Status").find((v) => v.id === status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
   // E4: archived statuses (Skipped) can't be newly assigned — legacy tasks
   // keep their status; delete the task instead of skipping it.
   if ((target as any).archived && target.id !== t.status_id)
     return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned. Delete the task instead.` });
+  if (!target.is_active && target.id !== t.status_id)
+    return res.status(400).json({ error: `"${target.label}" is deactivated and can no longer be assigned` });
   const old = valueById(t.status_id);
 
   // Legacy skip rule kept for completeness; unreachable while Skipped is

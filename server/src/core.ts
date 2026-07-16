@@ -60,6 +60,26 @@ export function todayCentral(): string {
   return CENTRAL_DATE.format(new Date());
 }
 
+const CENTRAL_DATETIME = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
+/** Current Central wall-clock time as 'YYYY-MM-DD HH:MM' — comparable to user-entered activity timestamps. */
+export function nowCentral(): string {
+  const p = Object.fromEntries(CENTRAL_DATETIME.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/** Strict calendar-date check: YYYY-MM-DD format AND a real day (rejects 2026-02-30). */
+export function isIsoDate(s: unknown): boolean {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  // Round-trip guards against Date rolling 2026-02-30 over to March 2nd
+  const d = new Date(s + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
 /** System keys for statuses that count as "not active". */
 export const CLOSED_KEYS = ["closed", "cancelled"];
 export const DONE_TASK_KEYS = ["complete", "skipped", "cancelled"];
@@ -189,10 +209,15 @@ export function parseCustomValue(field: CustomField, raw: unknown): { ok: true; 
  * Validate a { field_key: raw } map from a create/edit form or import row.
  * `flat` mirrors the parsed values keyed by field_key so field_requirements
  * checks can treat custom fields exactly like built-in ones.
+ *
+ * `partial: true` (edits) only parses fields present in the map — a PATCH
+ * that sends one field must not null out the others. Without it (creation),
+ * every active field is parsed and missing ones store null.
  */
 export function validateCustomValues(
   objectType: CustomObjectType,
-  bodyCustom: Record<string, unknown> | null | undefined
+  bodyCustom: Record<string, unknown> | null | undefined,
+  opts: { partial?: boolean } = {}
 ): {
   errors: string[];
   parsed: Map<number, string | null>;
@@ -202,6 +227,7 @@ export function validateCustomValues(
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
   for (const f of activeCustomFields(objectType)) {
+    if (opts.partial && !(bodyCustom && f.field_key in bodyCustom)) continue;
     const raw = bodyCustom?.[f.field_key];
     const r = parseCustomValue(f, raw);
     if (r.ok) {

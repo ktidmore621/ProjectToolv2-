@@ -39,13 +39,29 @@ timelogs.get("/", (req, res) => {
   res.json((db.prepare(sql).all(...params) as any[]).map(serializeLog));
 });
 
+/** Shared POST/PATCH validation: whole non-negative duration, ISO date, task in the same project. */
+function timeLogProblem(l: { date: unknown; hours: number; minutes: number; project_id: number; project_task_id: unknown }): string | null {
+  if (!Number.isInteger(l.hours) || !Number.isInteger(l.minutes) || l.hours < 0 || l.minutes < 0 || l.minutes > 59 || l.hours + l.minutes === 0)
+    return "Enter a positive duration (minutes 0–59)";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(l.date))) return "Date must be YYYY-MM-DD";
+  if (l.project_task_id != null) {
+    const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(l.project_task_id) as any;
+    if (!t) return "Task not found";
+    if (t.project_id !== l.project_id) return "Task must belong to the same project as the time entry";
+  }
+  return null;
+}
+
 timelogs.post("/", (req, res) => {
   const { project_id, project_task_id, user_id, date, hours, minutes, activity_type_id, notes } = req.body;
   if (!project_id || !user_id || !date) return res.status(400).json({ error: "Project, user and date are required" });
   const h = Number(hours ?? 0), m = Number(minutes ?? 0);
-  if (h < 0 || m < 0 || m > 59 || h + m === 0) return res.status(400).json({ error: "Enter a positive duration (minutes 0–59)" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(project_id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
+  const problem = timeLogProblem({ date, hours: h, minutes: m, project_id: p.id, project_task_id: project_task_id ?? null });
+  if (problem) return res.status(400).json({ error: problem });
+  // Closed projects are permanent historical records — their timecards included
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
   const id = db
     .prepare(
       `INSERT INTO time_logs (project_id, project_task_id, user_id, date, hours, minutes, activity_type_id, notes)
@@ -59,7 +75,21 @@ timelogs.post("/", (req, res) => {
 timelogs.patch("/:id", (req, res) => {
   const l = db.prepare("SELECT * FROM time_logs WHERE id = ?").get(req.params.id) as any;
   if (!l) return res.status(404).json({ error: "Time entry not found" });
+  // Author-only, like notes and wins — a time entry is the author's record
+  const editorId = Number(req.body.user_id);
+  if (!editorId || editorId !== l.user_id)
+    return res.status(403).json({ error: "Only the author can edit this time entry" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(l.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
   const fields = ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"];
+  // Validate the merged record with the same rules as POST — an edit can't
+  // produce an entry that creation would have rejected.
+  const next = { ...l, ...Object.fromEntries(fields.filter((f) => f in req.body).map((f) => [f, req.body[f]])) };
+  const problem = timeLogProblem({
+    date: next.date, hours: Number(next.hours), minutes: Number(next.minutes),
+    project_id: l.project_id, project_task_id: next.project_task_id ?? null,
+  });
+  if (problem) return res.status(400).json({ error: problem });
   const sets: string[] = []; const vals: any[] = [];
   for (const f of fields) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
   if (sets.length) db.prepare(`UPDATE time_logs SET ${sets.join(", ")} WHERE id = ?`).run(...vals, l.id);
@@ -67,7 +97,14 @@ timelogs.patch("/:id", (req, res) => {
 });
 
 timelogs.delete("/:id", (req, res) => {
-  db.prepare("DELETE FROM time_logs WHERE id = ?").run(req.params.id);
+  const l = db.prepare("SELECT * FROM time_logs WHERE id = ?").get(req.params.id) as any;
+  if (!l) return res.status(404).json({ error: "Time entry not found" });
+  const userId = Number(req.query.user_id ?? req.body?.user_id);
+  if (!userId || userId !== l.user_id)
+    return res.status(403).json({ error: "Only the author can delete this time entry" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(l.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
+  db.prepare("DELETE FROM time_logs WHERE id = ?").run(l.id);
   res.json({ ok: true });
 });
 
@@ -131,6 +168,12 @@ activities.post("/", (req, res) => {
     const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(tid) as any;
     if (!t) return res.status(400).json({ error: `Linked task ${tid} not found` });
     if (t.project_id !== Number(project_id)) return res.status(400).json({ error: "Linked tasks must belong to the same project" });
+  }
+  // The v1 single-task attachment gets the same membership check as task_ids
+  if (project_task_id != null) {
+    const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(project_task_id) as any;
+    if (!t) return res.status(400).json({ error: "Task not found" });
+    if (t.project_id !== Number(project_id)) return res.status(400).json({ error: "The task must belong to the same project as the note" });
   }
 
   const create = db.transaction(() => {
