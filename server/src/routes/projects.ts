@@ -151,7 +151,7 @@ projects.patch("/:id", (req, res) => {
       return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
     req.body.annualized_premium = n;
   }
-  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom) : null;
+  const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom, { partial: true }) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 
   // A field configured "always required" can't be blanked by an edit — the
@@ -408,7 +408,7 @@ tasks.patch("/:id", (req, res) => {
     ? (db.prepare("SELECT can_edit FROM template_tasks WHERE id = ?").get(t.template_task_id) as any)
     : null;
   // E9: task custom fields save through the same engine as project ones
-  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom) : null;
+  const custom = "custom" in req.body ? validateCustomValues("task", req.body.custom, { partial: true }) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");

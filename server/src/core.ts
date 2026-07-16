@@ -189,10 +189,15 @@ export function parseCustomValue(field: CustomField, raw: unknown): { ok: true; 
  * Validate a { field_key: raw } map from a create/edit form or import row.
  * `flat` mirrors the parsed values keyed by field_key so field_requirements
  * checks can treat custom fields exactly like built-in ones.
+ *
+ * `partial: true` (edits) only parses fields present in the map — a PATCH
+ * that sends one field must not null out the others. Without it (creation),
+ * every active field is parsed and missing ones store null.
  */
 export function validateCustomValues(
   objectType: CustomObjectType,
-  bodyCustom: Record<string, unknown> | null | undefined
+  bodyCustom: Record<string, unknown> | null | undefined,
+  opts: { partial?: boolean } = {}
 ): {
   errors: string[];
   parsed: Map<number, string | null>;
@@ -202,6 +207,7 @@ export function validateCustomValues(
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
   for (const f of activeCustomFields(objectType)) {
+    if (opts.partial && !(bodyCustom && f.field_key in bodyCustom)) continue;
     const raw = bodyCustom?.[f.field_key];
     const r = parseCustomValue(f, raw);
     if (r.ok) {

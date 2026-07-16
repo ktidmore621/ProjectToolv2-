@@ -208,11 +208,13 @@ function parseCustomValue(field: Row, raw: unknown): { ok: true; value: string |
   }
 }
 
-function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined) {
+/** `partial: true` (edits) only parses fields present in the map — a PATCH must not null out omitted fields. */
+function validateCustomValues(objectType: CustomObjectType, bodyCustom: Record<string, unknown> | null | undefined, opts: { partial?: boolean } = {}) {
   const errors: string[] = [];
   const parsed = new Map<number, string | null>();
   const flat: Record<string, string | null> = {};
   for (const f of activeCustomFields(objectType)) {
+    if (opts.partial && !(bodyCustom && f.field_key in bodyCustom)) continue;
     const r = parseCustomValue(f, bodyCustom?.[f.field_key]);
     if (r.ok) {
       parsed.set(f.id, r.value);
@@ -741,7 +743,7 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
     if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
     b.annualized_premium = n;
   }
-  const custom = "custom" in b ? validateCustomValues("project", b.custom) : null;
+  const custom = "custom" in b ? validateCustomValues("project", b.custom, { partial: true }) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
 
   // A field configured "always required" can't be blanked by an edit — the
@@ -937,7 +939,7 @@ route("PATCH", "/api/tasks/:id", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
   const tplTask = t.template_task_id ? db.template_tasks.find((x) => x.id === t.template_task_id) : null;
-  const custom = "custom" in b ? validateCustomValues("task", b.custom) : null; // E9
+  const custom = "custom" in b ? validateCustomValues("task", b.custom, { partial: true }) : null; // E9
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
   const editable = ["due_date", "assigned_to", "priority_id", "notes", "description"];
   if (t.task_type === "adhoc" || (tplTask?.can_edit ?? 1)) editable.push("name");

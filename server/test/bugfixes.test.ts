@@ -177,3 +177,24 @@ describe("Fix 4 — project edits can't blank always-required fields", () => {
     expect(res.body.mcp_name).toBe("Renamed Co");
   });
 });
+
+describe("Fix 5 — partial custom-field updates keep omitted fields", () => {
+  it("PATCHing one custom field leaves the others untouched", async () => {
+    const f1 = await request(app).post("/api/custom-fields").send({ label: "Region A", field_type: "text" });
+    const f2 = await request(app).post("/api/custom-fields").send({ label: "Segment A", field_type: "text" });
+    expect(f1.status).toBe(201);
+    expect(f2.status).toBe(201);
+    const k1 = f1.body.field_key, k2 = f2.body.field_key;
+    const p = await createProject(app, { custom: { [k1]: "West", [k2]: "Enterprise" } });
+    const res = await request(app).patch(`/api/projects/${p.id}`)
+      .send({ user_id: uid(), custom: { [k1]: "East" } });
+    expect(res.status).toBe(200);
+    expect(res.body.custom[k1].value).toBe("East");
+    expect(res.body.custom[k2].value).toBe("Enterprise");
+    // an explicit null/blank still clears
+    const clear = await request(app).patch(`/api/projects/${p.id}`)
+      .send({ user_id: uid(), custom: { [k2]: "" } });
+    expect(clear.body.custom[k2].value).toBeNull();
+    expect(clear.body.custom[k1].value).toBe("East");
+  });
+});
