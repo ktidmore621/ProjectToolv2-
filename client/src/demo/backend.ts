@@ -993,6 +993,18 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
 });
 
 // ---- time logs ----
+/** Shared POST/PATCH validation: whole non-negative duration, ISO date, task in the same project. */
+function timeLogProblem(l: { date: unknown; hours: number; minutes: number; project_id: number; project_task_id: unknown }): string | null {
+  if (!Number.isInteger(l.hours) || !Number.isInteger(l.minutes) || l.hours < 0 || l.minutes < 0 || l.minutes > 59 || l.hours + l.minutes === 0)
+    return "Enter a positive duration (minutes 0–59)";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(l.date))) return "Date must be YYYY-MM-DD";
+  if (l.project_task_id != null) {
+    const t = db.project_tasks.find((x) => x.id === Number(l.project_task_id));
+    if (!t) return "Task not found";
+    if (t.project_id !== l.project_id) return "Task must belong to the same project as the time entry";
+  }
+  return null;
+}
 route("GET", "/api/timelogs", (_m, q) => {
   let out = db.time_logs.slice();
   if (q.get("user_id")) out = out.filter((l) => l.user_id === Number(q.get("user_id")));
@@ -1007,9 +1019,10 @@ route("GET", "/api/timelogs", (_m, q) => {
 route("POST", "/api/timelogs", (_m, _q, b) => {
   if (!b.project_id || !b.user_id || !b.date) return err(400, "Project, user and date are required");
   const h = Number(b.hours ?? 0), min = Number(b.minutes ?? 0);
-  if (h < 0 || min < 0 || min > 59 || h + min === 0) return err(400, "Enter a positive duration (minutes 0–59)");
   const p = db.projects.find((x) => x.id === b.project_id);
   if (!p) return err(404, "Project not found");
+  const problem = timeLogProblem({ date: b.date, hours: h, minutes: min, project_id: p.id, project_task_id: b.project_task_id ?? null });
+  if (problem) return err(400, problem);
   // Closed projects are permanent historical records — their timecards included
   if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
   const l: Row = {
@@ -1028,7 +1041,15 @@ route("PATCH", "/api/timelogs/:id", (m, _q, b) => {
   if (!editorId || editorId !== l.user_id) return err(403, "Only the author can edit this time entry");
   const p = db.projects.find((x) => x.id === l.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
-  for (const f of ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"]) if (f in b) l[f] = b[f];
+  const fields = ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"];
+  // Validate the merged record with the same rules as POST
+  const next = { ...l, ...Object.fromEntries(fields.filter((f) => f in b).map((f) => [f, b[f]])) };
+  const problem = timeLogProblem({
+    date: next.date, hours: Number(next.hours), minutes: Number(next.minutes),
+    project_id: l.project_id, project_task_id: next.project_task_id ?? null,
+  });
+  if (problem) return err(400, problem);
+  for (const f of fields) if (f in b) l[f] = b[f];
   return ok(serializeLog(l));
 });
 route("DELETE", "/api/timelogs/:id", (m, q, b) => {

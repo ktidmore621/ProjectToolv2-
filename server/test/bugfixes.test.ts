@@ -69,3 +69,42 @@ describe("Fix 1 — time logs respect closed projects and are author-only", () =
     expect(res.status).toBe(404);
   });
 });
+
+describe("Fix 2 — time-log validation on edit and non-numeric input", () => {
+  it("rejects negative and out-of-range durations on PATCH", async () => {
+    const p = await createProject(app);
+    const log = await logTime(p.id);
+    const res = await request(app).patch(`/api/timelogs/${log.body.id}`).send({ user_id: uid(), hours: -5, minutes: 500 });
+    expect(res.status).toBe(400);
+    const unchanged = await request(app).get(`/api/timelogs?project_id=${p.id}`);
+    expect(unchanged.body[0].total_minutes).toBe(60);
+  });
+
+  it("rejects non-numeric hours with a 400 instead of crashing", async () => {
+    const p = await createProject(app);
+    const res = await logTime(p.id, { hours: "abc" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/duration/i);
+  });
+
+  it("rejects linking a time entry to a task from a different project", async () => {
+    const p1 = await createProject(app);
+    const p2 = await createProject(app);
+    const foreignTask = p2.tasks[0];
+    const create = await logTime(p1.id, { project_task_id: foreignTask.id });
+    expect(create.status).toBe(400);
+    const log = await logTime(p1.id);
+    const patch = await request(app).patch(`/api/timelogs/${log.body.id}`).send({ user_id: uid(), project_task_id: foreignTask.id });
+    expect(patch.status).toBe(400);
+    // a task from the same project is fine
+    const okPatch = await request(app).patch(`/api/timelogs/${log.body.id}`).send({ user_id: uid(), project_task_id: p1.tasks[0].id });
+    expect(okPatch.status).toBe(200);
+    expect(okPatch.body.task_name).toBe(p1.tasks[0].name);
+  });
+
+  it("rejects a malformed date", async () => {
+    const p = await createProject(app);
+    const res = await logTime(p.id, { date: "not-a-date" });
+    expect(res.status).toBe(400);
+  });
+});
