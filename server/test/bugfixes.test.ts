@@ -232,3 +232,42 @@ describe("Fix 6 — deleting a legacy win with a twin description", () => {
     expect(countNotes()).toBe(1); // pre-fix: both notes deleted
   });
 });
+
+describe("Fix 7 — project dates are validated as real calendar dates", () => {
+  it("rejects a malformed assignment date with a 400 instead of a 500", async () => {
+    const res = await request(app).post("/api/projects").send({
+      mcp_number: "MCP-BADDATE", mcp_name: "Bad Date Co", assignee_id: uid(),
+      annualized_premium: 100, assignment_date: "not-a-date",
+      template_id: (db.prepare("SELECT id FROM workflow_templates WHERE is_default = 1").get() as any).id,
+      user_id: uid(),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Assignment Date/);
+  });
+
+  it("rejects an impossible calendar day", async () => {
+    const res = await request(app).post("/api/projects").send({
+      mcp_number: "MCP-BADDATE2", mcp_name: "Bad Date Co 2", assignee_id: uid(),
+      annualized_premium: 100, assignment_date: "2026-02-30",
+      template_id: (db.prepare("SELECT id FROM workflow_templates WHERE is_default = 1").get() as any).id,
+      user_id: uid(),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects garbage target_date on create and edit", async () => {
+    const create = await request(app).post("/api/projects").send({
+      mcp_number: "MCP-BADTGT", mcp_name: "Bad Target Co", assignee_id: uid(),
+      annualized_premium: 100, assignment_date: "2026-01-10", target_date: "soon",
+      template_id: (db.prepare("SELECT id FROM workflow_templates WHERE is_default = 1").get() as any).id,
+      user_id: uid(),
+    });
+    expect(create.status).toBe(400);
+    const p = await createProject(app);
+    const patch = await request(app).patch(`/api/projects/${p.id}`).send({ target_date: "soon", user_id: uid() });
+    expect(patch.status).toBe(400);
+    const okPatch = await request(app).patch(`/api/projects/${p.id}`).send({ target_date: "2026-06-30", user_id: uid() });
+    expect(okPatch.status).toBe(200);
+    expect(okPatch.body.target_date).toBe("2026-06-30");
+  });
+});

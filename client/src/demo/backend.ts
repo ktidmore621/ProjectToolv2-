@@ -40,6 +40,13 @@ function nextProjectCode(): string {
   return `CAP-${String(next).padStart(4, "0")}`;
 }
 const isClosedStatus = (statusId: number) => CLOSED_KEYS.includes(valueById(statusId)?.maps_to ?? "");
+/** Strict calendar-date check: YYYY-MM-DD format AND a real day (rejects 2026-02-30). */
+const isIsoDate = (s: unknown): boolean => {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  // Round-trip guards against Date rolling 2026-02-30 over to March 2nd
+  const d = new Date(s + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
 const doneStatusIds = () => valuesFor("Task Status").filter((v) => DONE_TASK_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 const activeStatusIds = () => valuesFor("Project Status").filter((v) => !CLOSED_KEYS.includes(v.maps_to ?? "")).map((v) => v.id);
 
@@ -708,6 +715,10 @@ route("POST", "/api/projects", (_m, _q, b) => {
   const ap = Number(b.annualized_premium);
   if (b.annualized_premium == null || b.annualized_premium === "" || !Number.isFinite(ap) || ap < 0)
     return err(400, "Annualized Premium (AP) is required and must be a dollar amount");
+  // Real calendar dates only — a malformed date would corrupt generated task
+  // due dates and the RAG date comparisons.
+  if (!isIsoDate(b.assignment_date)) return err(400, "Assignment Date must be a valid date (YYYY-MM-DD)");
+  if (b.target_date != null && !isIsoDate(b.target_date)) return err(400, "Estimated Completion Date must be a valid date (YYYY-MM-DD)");
   const custom = validateCustomValues("project", b.custom);
   if (custom.errors.length) return err(400, custom.errors.join("; "));
   const reqErrs = requirementErrors("project", ["creation", "always"], { ...b, ...custom.flat, project_code: "auto" });
@@ -743,6 +754,8 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
     if (!Number.isFinite(n) || n < 0) return err(400, "Annualized Premium (AP) must be a dollar amount");
     b.annualized_premium = n;
   }
+  if ("target_date" in b && b.target_date != null && !isIsoDate(b.target_date))
+    return err(400, "Estimated Completion Date must be a valid date (YYYY-MM-DD)");
   const custom = "custom" in b ? validateCustomValues("project", b.custom, { partial: true }) : null;
   if (custom?.errors.length) return err(400, custom.errors.join("; "));
 

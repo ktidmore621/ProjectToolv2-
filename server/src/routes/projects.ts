@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import {
   CLOSED_KEYS, DONE_TASK_KEYS, closureProblems, fmtCurrency, generateTasksFromTemplate, isClosedStatus,
-  logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
+  isIsoDate, logActivity, nextProjectCode, saveCustomValues, serializeActivity, serializeProject, serializeTask,
   todayCentral, validateCustomValues, valueById, valueByMapsTo, valuesFor,
 } from "../core.js";
 
@@ -90,8 +90,10 @@ const createSchema = z.object({
   project_name: z.string().nullish(), // E3: optional at creation
   assignee_id: z.number(),
   annualized_premium: z.number({ required_error: "Annualized Premium (AP) is required", invalid_type_error: "Annualized Premium (AP) must be a dollar amount" }).nonnegative("Annualized Premium (AP) must be a dollar amount"),
-  assignment_date: z.string().min(1),
-  target_date: z.string().nullish(),
+  // Real calendar dates only — a malformed date used to crash task generation
+  // mid-transaction and silently distort the RAG date comparisons.
+  assignment_date: z.string().refine(isIsoDate, "Assignment Date must be a valid date (YYYY-MM-DD)"),
+  target_date: z.string().nullish().refine((v) => v == null || isIsoDate(v), "Estimated Completion Date must be a valid date (YYYY-MM-DD)"),
   risk_level_id: z.number().nullish(),
   template_id: z.number(),
   custom: z.record(z.any()).nullish(), // { field_key: raw value } for admin-defined fields
@@ -151,6 +153,8 @@ projects.patch("/:id", (req, res) => {
       return res.status(400).json({ error: "Annualized Premium (AP) must be a dollar amount" });
     req.body.annualized_premium = n;
   }
+  if ("target_date" in req.body && req.body.target_date != null && !isIsoDate(req.body.target_date))
+    return res.status(400).json({ error: "Estimated Completion Date must be a valid date (YYYY-MM-DD)" });
   const custom = "custom" in req.body ? validateCustomValues("project", req.body.custom, { partial: true }) : null;
   if (custom?.errors.length) return res.status(400).json({ error: custom.errors.join("; ") });
 

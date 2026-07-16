@@ -60,6 +60,14 @@ export function todayCentral(): string {
   return CENTRAL_DATE.format(new Date());
 }
 
+/** Strict calendar-date check: YYYY-MM-DD format AND a real day (rejects 2026-02-30). */
+export function isIsoDate(s: unknown): boolean {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  // Round-trip guards against Date rolling 2026-02-30 over to March 2nd
+  const d = new Date(s + "T00:00:00Z");
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
 /** System keys for statuses that count as "not active". */
 export const CLOSED_KEYS = ["closed", "cancelled"];
 export const DONE_TASK_KEYS = ["complete", "skipped", "cancelled"];
