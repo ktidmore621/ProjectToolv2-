@@ -312,3 +312,24 @@ describe("Fix 8 — CSV import: preview matches commit and requirement rules app
     expect(commit.body.skipped).toBe(0);
   });
 });
+
+describe("Fix 9 — notes can't attach to another project's task", () => {
+  it("rejects a foreign project_task_id", async () => {
+    const p1 = await createProject(app);
+    const p2 = await createProject(app);
+    const res = await request(app).post("/api/activities").send({
+      project_id: p1.id, project_task_id: p2.tasks[0].id, user_id: uid(), note: "cross-project note",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/same project/);
+  });
+
+  it("still accepts a task from the same project", async () => {
+    const p = await createProject(app);
+    const res = await request(app).post("/api/activities").send({
+      project_id: p.id, project_task_id: p.tasks[0].id, user_id: uid(), note: "task note",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.task_name).toBe(p.tasks[0].name);
+  });
+});

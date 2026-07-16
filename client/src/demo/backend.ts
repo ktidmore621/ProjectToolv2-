@@ -1136,6 +1136,12 @@ route("POST", "/api/activities", (_m, _q, b) => {
     if (!t) return err(400, `Linked task ${tid} not found`);
     if (t.project_id !== Number(b.project_id)) return err(400, "Linked tasks must belong to the same project");
   }
+  // The v1 single-task attachment gets the same membership check as task_ids
+  if (b.project_task_id != null) {
+    const t = db.project_tasks.find((x) => x.id === Number(b.project_task_id));
+    if (!t) return err(400, "Task not found");
+    if (t.project_id !== Number(b.project_id)) return err(400, "The task must belong to the same project as the note");
+  }
 
   const a = logActivity({
     project_id: b.project_id,

@@ -169,6 +169,12 @@ activities.post("/", (req, res) => {
     if (!t) return res.status(400).json({ error: `Linked task ${tid} not found` });
     if (t.project_id !== Number(project_id)) return res.status(400).json({ error: "Linked tasks must belong to the same project" });
   }
+  // The v1 single-task attachment gets the same membership check as task_ids
+  if (project_task_id != null) {
+    const t = db.prepare("SELECT project_id FROM project_tasks WHERE id = ?").get(project_task_id) as any;
+    if (!t) return res.status(400).json({ error: "Task not found" });
+    if (t.project_id !== Number(project_id)) return res.status(400).json({ error: "The task must belong to the same project as the note" });
+  }
 
   const create = db.transaction(() => {
     const id = db.prepare(
