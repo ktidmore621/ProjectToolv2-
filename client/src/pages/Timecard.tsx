@@ -203,7 +203,7 @@ function CellModal({ cell, onClose, onSaved }: { cell: CellTarget; onClose: () =
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
   }
   async function remove(id: number) {
-    await api.del(`/api/timelogs/${id}`);
+    await api.del(`/api/timelogs/${id}?user_id=${currentUser?.id}`);
     onSaved();
   }
 

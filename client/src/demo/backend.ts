@@ -1008,7 +1008,10 @@ route("POST", "/api/timelogs", (_m, _q, b) => {
   if (!b.project_id || !b.user_id || !b.date) return err(400, "Project, user and date are required");
   const h = Number(b.hours ?? 0), min = Number(b.minutes ?? 0);
   if (h < 0 || min < 0 || min > 59 || h + min === 0) return err(400, "Enter a positive duration (minutes 0–59)");
-  if (!db.projects.some((p) => p.id === b.project_id)) return err(404, "Project not found");
+  const p = db.projects.find((x) => x.id === b.project_id);
+  if (!p) return err(404, "Project not found");
+  // Closed projects are permanent historical records — their timecards included
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
   const l: Row = {
     id: nextId(), project_id: b.project_id, project_task_id: b.project_task_id ?? null,
     user_id: b.user_id, date: b.date, hours: h, minutes: min,
@@ -1020,11 +1023,22 @@ route("POST", "/api/timelogs", (_m, _q, b) => {
 route("PATCH", "/api/timelogs/:id", (m, _q, b) => {
   const l = db.time_logs.find((x) => x.id === Number(m.id));
   if (!l) return err(404, "Time entry not found");
+  // Author-only, like notes and wins — a time entry is the author's record
+  const editorId = Number(b.user_id);
+  if (!editorId || editorId !== l.user_id) return err(403, "Only the author can edit this time entry");
+  const p = db.projects.find((x) => x.id === l.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
   for (const f of ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"]) if (f in b) l[f] = b[f];
   return ok(serializeLog(l));
 });
-route("DELETE", "/api/timelogs/:id", (m) => {
-  db.time_logs = db.time_logs.filter((x) => x.id !== Number(m.id));
+route("DELETE", "/api/timelogs/:id", (m, q, b) => {
+  const l = db.time_logs.find((x) => x.id === Number(m.id));
+  if (!l) return err(404, "Time entry not found");
+  const userId = Number(q.get("user_id") ?? b?.user_id);
+  if (!userId || userId !== l.user_id) return err(403, "Only the author can delete this time entry");
+  const p = db.projects.find((x) => x.id === l.project_id)!;
+  if (isClosedStatus(p.status_id)) return err(400, "This project is closed — its time log is read-only");
+  db.time_logs = db.time_logs.filter((x) => x.id !== l.id);
   return ok({ ok: true });
 });
 

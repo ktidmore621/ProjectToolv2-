@@ -46,6 +46,8 @@ timelogs.post("/", (req, res) => {
   if (h < 0 || m < 0 || m > 59 || h + m === 0) return res.status(400).json({ error: "Enter a positive duration (minutes 0–59)" });
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(project_id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
+  // Closed projects are permanent historical records — their timecards included
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
   const id = db
     .prepare(
       `INSERT INTO time_logs (project_id, project_task_id, user_id, date, hours, minutes, activity_type_id, notes)
@@ -59,6 +61,12 @@ timelogs.post("/", (req, res) => {
 timelogs.patch("/:id", (req, res) => {
   const l = db.prepare("SELECT * FROM time_logs WHERE id = ?").get(req.params.id) as any;
   if (!l) return res.status(404).json({ error: "Time entry not found" });
+  // Author-only, like notes and wins — a time entry is the author's record
+  const editorId = Number(req.body.user_id);
+  if (!editorId || editorId !== l.user_id)
+    return res.status(403).json({ error: "Only the author can edit this time entry" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(l.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
   const fields = ["date", "hours", "minutes", "activity_type_id", "notes", "project_task_id"];
   const sets: string[] = []; const vals: any[] = [];
   for (const f of fields) if (f in req.body) { sets.push(`${f} = ?`); vals.push(req.body[f]); }
@@ -67,7 +75,14 @@ timelogs.patch("/:id", (req, res) => {
 });
 
 timelogs.delete("/:id", (req, res) => {
-  db.prepare("DELETE FROM time_logs WHERE id = ?").run(req.params.id);
+  const l = db.prepare("SELECT * FROM time_logs WHERE id = ?").get(req.params.id) as any;
+  if (!l) return res.status(404).json({ error: "Time entry not found" });
+  const userId = Number(req.query.user_id ?? req.body?.user_id);
+  if (!userId || userId !== l.user_id)
+    return res.status(403).json({ error: "Only the author can delete this time entry" });
+  const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(l.project_id) as any;
+  if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "This project is closed — its time log is read-only" });
+  db.prepare("DELETE FROM time_logs WHERE id = ?").run(l.id);
   res.json({ ok: true });
 });
 
