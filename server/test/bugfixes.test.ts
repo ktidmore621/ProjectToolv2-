@@ -108,3 +108,46 @@ describe("Fix 2 — time-log validation on edit and non-numeric input", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("Fix 3 — status endpoints only accept values from their own picklist", () => {
+  it("rejects a Task Status value as a project status", async () => {
+    const p = await createProject(app);
+    const res = await request(app).post(`/api/projects/${p.id}/status`)
+      .send({ status_id: valueId("Task Status", "in_progress"), user_id: uid() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Unknown status");
+  });
+
+  it("rejects a Win Category value as a task status", async () => {
+    const p = await createProject(app);
+    const res = await request(app).post(`/api/tasks/${p.tasks[0].id}/status`)
+      .send({ status_id: valueId("Win Category", "cost_savings"), user_id: uid() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Unknown status");
+  });
+
+  it("still accepts a legitimate status from the right picklist", async () => {
+    const p = await createProject(app);
+    const proj = await request(app).post(`/api/projects/${p.id}/status`)
+      .send({ status_id: valueId("Project Status", "in_progress"), user_id: uid() });
+    expect(proj.status).toBe(200);
+    expect(proj.body.status_key).toBe("in_progress");
+    const task = await request(app).post(`/api/tasks/${p.tasks[0].id}/status`)
+      .send({ status_id: valueId("Task Status", "in_progress"), user_id: uid() });
+    expect(task.status).toBe(200);
+    expect(task.body.task.status_key).toBe("in_progress");
+  });
+
+  it("rejects newly assigning a deactivated value", async () => {
+    const p = await createProject(app);
+    // deactivate a non-system value (Risk-style: use a fresh custom status)
+    const list = db.prepare("SELECT id FROM picklists WHERE name = 'Project Status'").get() as { id: number };
+    const custom = await request(app).post(`/api/picklists/${list.id}/values`).send({ label: "Weird Interim" });
+    expect(custom.status).toBe(201);
+    await request(app).patch(`/api/picklist-values/${custom.body.id}`).send({ is_active: false });
+    const res = await request(app).post(`/api/projects/${p.id}/status`)
+      .send({ status_id: custom.body.id, user_id: uid() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/deactivated/);
+  });
+});

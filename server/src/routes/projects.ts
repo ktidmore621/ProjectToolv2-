@@ -205,10 +205,14 @@ projects.post("/:id/status", (req, res) => {
   const p = db.prepare("SELECT * FROM projects WHERE id = ?").get(req.params.id) as any;
   if (!p) return res.status(404).json({ error: "Project not found" });
   const { status_id, user_id } = req.body as { status_id: number; user_id: number };
-  const target = valueById(status_id);
+  // Only values from THIS picklist qualify — an id from another picklist would
+  // corrupt board columns and the one-active-project-per-MCP guard.
+  const target = valuesFor("Project Status").find((v) => v.id === status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
   if ((target as any).archived)
     return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned` });
+  if (!target.is_active && target.id !== p.status_id)
+    return res.status(400).json({ error: `"${target.label}" is deactivated and can no longer be assigned` });
   if (isClosedStatus(p.status_id)) return res.status(400).json({ error: "Closed projects are never reopened (§2.2). Create a new project for this MCP instead." });
 
   if (target.maps_to === "closed") {
@@ -448,12 +452,16 @@ tasks.post("/:id/status", (req, res) => {
   const { status_id, user_id, skip_reason } = req.body as {
     status_id: number; user_id: number; skip_reason?: string;
   };
-  const target = valueById(status_id);
+  // Only Task Status values qualify — an id from another picklist would make
+  // the task invisible to done/blocked logic and closure checks.
+  const target = valuesFor("Task Status").find((v) => v.id === status_id);
   if (!target) return res.status(400).json({ error: "Unknown status" });
   // E4: archived statuses (Skipped) can't be newly assigned — legacy tasks
   // keep their status; delete the task instead of skipping it.
   if ((target as any).archived && target.id !== t.status_id)
     return res.status(400).json({ error: `"${target.label}" is archived and can no longer be assigned. Delete the task instead.` });
+  if (!target.is_active && target.id !== t.status_id)
+    return res.status(400).json({ error: `"${target.label}" is deactivated and can no longer be assigned` });
   const old = valueById(t.status_id);
 
   // Legacy skip rule kept for completeness; unreachable while Skipped is

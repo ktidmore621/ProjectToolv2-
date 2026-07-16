@@ -778,9 +778,13 @@ route("PATCH", "/api/projects/:id", (m, _q, b) => {
 route("POST", "/api/projects/:id/status", (m, _q, b) => {
   const p = db.projects.find((x) => x.id === Number(m.id));
   if (!p) return err(404, "Project not found");
-  const target = valueById(b.status_id);
+  // Only values from THIS picklist qualify — an id from another picklist would
+  // corrupt board columns and the one-active-project-per-MCP guard.
+  const target = valuesFor("Project Status").find((v) => v.id === b.status_id);
   if (!target) return err(400, "Unknown status");
   if (target.archived) return err(400, `"${target.label}" is archived and can no longer be assigned`);
+  if (!target.is_active && target.id !== p.status_id)
+    return err(400, `"${target.label}" is deactivated and can no longer be assigned`);
   if (isClosedStatus(p.status_id))
     return err(400, "Closed projects are never reopened (§2.2). Create a new project for this MCP instead.");
   if (target.maps_to === "closed") {
@@ -958,11 +962,15 @@ route("POST", "/api/tasks/:id/status", (m, _q, b) => {
   if (!t) return err(404, "Task not found");
   const p = db.projects.find((x) => x.id === t.project_id)!;
   if (isClosedStatus(p.status_id)) return err(400, "Closed projects are read-only");
-  const target = valueById(b.status_id);
+  // Only Task Status values qualify — an id from another picklist would make
+  // the task invisible to done/blocked logic and closure checks.
+  const target = valuesFor("Task Status").find((v) => v.id === b.status_id);
   if (!target) return err(400, "Unknown status");
   // E4: archived statuses (Skipped) can't be newly assigned
   if (target.archived && target.id !== t.status_id)
     return err(400, `"${target.label}" is archived and can no longer be assigned. Delete the task instead.`);
+  if (!target.is_active && target.id !== t.status_id)
+    return err(400, `"${target.label}" is deactivated and can no longer be assigned`);
   const old = valueById(t.status_id);
 
   if (target.maps_to === "skipped" && t.required && !b.skip_reason?.trim())
