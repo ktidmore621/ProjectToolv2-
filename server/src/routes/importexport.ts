@@ -61,8 +61,14 @@ importexport.get("/export/timelogs.csv", (req, res) => {
       return [r.date, r.user_name, r.project_code, r.mcp_name, task?.name ?? "", r.hours, r.minutes, act?.label ?? "", r.notes];
     })
   );
-  sendCsv(res, "time-entries.csv", csv);
+  sendCsv(res, timecardCsvName(start, end), csv);
 });
+
+/** Self-describing export name, e.g. timecard-2026-07-13-to-2026-07-19.csv. */
+export function timecardCsvName(start?: string, end?: string): string {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  return start && end && iso.test(start) && iso.test(end) ? `timecard-${start}-to-${end}.csv` : "time-entries.csv";
+}
 
 /**
  * Portfolio-wide structured wins export (v2 §3) — every win across every

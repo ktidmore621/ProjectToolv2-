@@ -1529,8 +1529,11 @@ export function demoCsv(url: string): { filename: string; csv: string } {
     if (q.get("end")) logs = logs.filter((l) => l.date <= q.get("end")!);
     if (q.get("user_id")) logs = logs.filter((l) => l.user_id === Number(q.get("user_id")));
     logs.sort((a, b) => (a.date < b.date ? -1 : 1));
+    // self-describing name matching the server: timecard-<start>-to-<end>.csv
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const start = q.get("start"), endDate = q.get("end");
     return {
-      filename: "time-entries.csv",
+      filename: start && endDate && iso.test(start) && iso.test(endDate) ? `timecard-${start}-to-${endDate}.csv` : "time-entries.csv",
       csv: toCsv(
         ["Date", "User", "Project ID", "MCP Name", "Task", "Hours", "Minutes", "Activity Type", "Notes"],
         logs.map((l) => {
