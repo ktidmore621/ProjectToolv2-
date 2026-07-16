@@ -271,3 +271,44 @@ describe("Fix 7 — project dates are validated as real calendar dates", () => {
     expect(okPatch.body.target_date).toBe("2026-06-30");
   });
 });
+
+describe("Fix 8 — CSV import: preview matches commit and requirement rules apply", () => {
+  const csvFor = (mcp: string) => `MCP Number,MCP Name,Assignee,AP\n${mcp},Import Co,Morgan Hale,1000`;
+
+  it("flags rows as invalid in preview when no active template exists (instead of silently skipping at commit)", async () => {
+    const tpls = db.prepare("SELECT id FROM workflow_templates").all() as { id: number }[];
+    db.prepare("UPDATE workflow_templates SET is_active = 0").run();
+    try {
+      const prev = await request(app).post("/api/import/projects/preview").send({ csv: csvFor("MCP-IMP-NT") });
+      expect(prev.status).toBe(200);
+      expect(prev.body.valid).toBe(0);
+      expect(prev.body.rows[0].errors.join(" ")).toMatch(/template/i);
+      const commit = await request(app).post("/api/import/projects/commit").send({ csv: csvFor("MCP-IMP-NT"), user_id: uid() });
+      expect(commit.body.created).toBe(0);
+      expect(commit.body.skipped).toBe(1);
+    } finally {
+      for (const t of tpls) db.prepare("UPDATE workflow_templates SET is_active = 1 WHERE id = ?").run(t.id);
+    }
+  });
+
+  it("enforces admin-configured required-at-creation fields", async () => {
+    // make Estimated Completion Date required at creation
+    const rule = db.prepare("SELECT id FROM field_requirements WHERE object_type = 'project' AND field_name = 'target_date'").get() as { id: number };
+    await request(app).patch(`/api/field-requirements/${rule.id}`).send({ required: true, required_at: "creation" });
+    try {
+      const prev = await request(app).post("/api/import/projects/preview").send({ csv: csvFor("MCP-IMP-REQ") });
+      expect(prev.body.valid).toBe(0);
+      expect(prev.body.rows[0].errors).toContain("Estimated Completion Date is required");
+      const commit = await request(app).post("/api/import/projects/commit").send({ csv: csvFor("MCP-IMP-REQ"), user_id: uid() });
+      expect(commit.body.created).toBe(0);
+    } finally {
+      await request(app).patch(`/api/field-requirements/${rule.id}`).send({ required: false, required_at: "creation" });
+    }
+  });
+
+  it("a clean row still imports", async () => {
+    const commit = await request(app).post("/api/import/projects/commit").send({ csv: csvFor("MCP-IMP-OK"), user_id: uid() });
+    expect(commit.body.created).toBe(1);
+    expect(commit.body.skipped).toBe(0);
+  });
+});

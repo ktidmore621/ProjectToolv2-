@@ -1517,11 +1517,33 @@ function validateImport(csvText: string): { rows: any[]; headerError?: string } 
       const tpl = templates.find((t) => t.name.toLowerCase() === row.template.toLowerCase());
       if (!tpl) row.errors.push(`Unknown template "${row.template}"`);
       else row.template_id = tpl.id;
-    } else row.template_id = defaultTpl?.id;
+    } else {
+      row.template_id = defaultTpl?.id;
+      // Without this, preview called the row "Ready" and commit silently skipped it
+      if (!row.template_id) row.errors.push("No active workflow template available — create or activate one first");
+    }
     for (const [f, i] of customCols) {
       const parsed = parseCustomValue(f, r[i]);
       if (parsed.ok) row.custom[f.field_key] = parsed.value;
       else row.errors.push(parsed.error);
+    }
+    // Imported projects obey the same admin-configured requirement rules as the create form
+    const provided: Record<string, unknown> = {
+      project_code: "auto",
+      mcp_number: row.mcp_number, mcp_name: row.mcp_name, project_name: row.project_name,
+      // raw-cell fallback: a provided-but-invalid value is already flagged above
+      assignee_id: row.assignee_id ?? (row.assignee || undefined),
+      annualized_premium: row.annualized_premium ?? ((iAp >= 0 ? (r[iAp] ?? "").trim() : "") || undefined),
+      assignment_date: row.assignment_date, template_id: row.template_id,
+      ...row.custom,
+    };
+    for (const rule of db.field_requirements) {
+      if (rule.object_type !== "project" || !rule.required || !["creation", "always"].includes(rule.required_at)) continue;
+      const v = provided[rule.field_name];
+      if (v === undefined || v === null || (typeof v === "string" && !v.trim())) {
+        const msg = `${rule.label} is required`;
+        if (!row.errors.includes(msg)) row.errors.push(msg);
+      }
     }
     return row;
   });
