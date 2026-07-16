@@ -203,8 +203,12 @@ function CellModal({ cell, onClose, onSaved }: { cell: CellTarget; onClose: () =
     } catch (err) { toast(err instanceof Error ? err.message : "Failed", "error"); }
   }
   async function remove(id: number) {
-    await api.del(`/api/timelogs/${id}?user_id=${currentUser?.id}`);
-    onSaved();
+    try {
+      await api.del(`/api/timelogs/${id}?user_id=${currentUser?.id}`);
+      onSaved();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to delete the entry", "error");
+    }
   }
 
   return (
